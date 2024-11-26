@@ -7,12 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 const (
@@ -22,6 +19,8 @@ const (
 
 type Option func(*triggers) error
 
+// WithLogTableName specifies the name of the log table. This defaults to
+// __cdc_log but may be customized if needed.
 func WithLogTableName(name string) Option {
 	return func(t *triggers) error {
 		t.logTableName = name
@@ -29,6 +28,8 @@ func WithLogTableName(name string) Option {
 	}
 }
 
+// WithMaxBatchSize specifies the maximum number of changes to process in a
+// single batch. This defaults to 50.
 func WithMaxBatchSize(size int) Option {
 	return func(t *triggers) error {
 		t.maxBatchSize = size
@@ -36,6 +37,9 @@ func WithMaxBatchSize(size int) Option {
 	}
 }
 
+// WithoutSubsecondTime can disable the use of subsecond timestamps in the log
+// table. This is only needed for old versions of SQLite and should be avoided
+// otherwise.
 func WithoutSubsecondTime(v bool) Option {
 	return func(t *triggers) error {
 		t.subsec = !v
@@ -43,9 +47,23 @@ func WithoutSubsecondTime(v bool) Option {
 	}
 }
 
+// WithBlobSupport can enable or disable the storage of BLOB columns in the log
+// table. This defaults to false because of the performance impacts of encoding
+// BLOB type data.
 func WithBlobSupport(v bool) Option {
 	return func(t *triggers) error {
 		t.blobs = v
+		return nil
+	}
+}
+
+// WithSignal installs a custom awakening signal that triggers the inspection
+// of the log table when in CDC mode. The default signal is a combination of
+// a filesystem watcher that signals when the SQLite files have changed and a
+// 250ms timer used as a backstop for any missed filesystem events.
+func WithSignal(signal Signal) Option {
+	return func(t *triggers) error {
+		t.signal = signal
 		return nil
 	}
 }
@@ -70,17 +88,12 @@ func New(db *sql.DB, handler ChangesHandler, tables []string, options ...Option)
 	if err != nil {
 		return nil, err
 	}
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to create fsnotify watcher", err)
-	}
 	result := &triggers{
 		db:           db,
 		meta:         meta,
 		handler:      handler,
 		tables:       tables,
 		fnOnce:       &sync.Once{},
-		watcher:      watcher,
 		closed:       make(chan any),
 		closeOnce:    &sync.Once{},
 		logTableName: defaultLogTableName,
@@ -93,6 +106,23 @@ func New(db *sql.DB, handler ChangesHandler, tables []string, options ...Option)
 			return nil, err
 		}
 	}
+
+	if result.signal == nil {
+		fsSignal, err := NewFSNotifySignal(db)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create filesystem wake signal: %w", err)
+		}
+		timeSignal, err := NewTimeSignal(250 * time.Millisecond)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create time wake signal: %w", err)
+		}
+		signal, err := NewMultiSignal(fsSignal, timeSignal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multi wake signal: %w", err)
+		}
+		result.signal = signal
+	}
+
 	return result, nil
 }
 
@@ -102,7 +132,7 @@ type triggers struct {
 	handler      ChangesHandler
 	tables       []string
 	fnOnce       *sync.Once
-	watcher      *fsnotify.Watcher
+	signal       Signal
 	closed       chan any
 	closeOnce    *sync.Once
 	logTableName string
@@ -120,43 +150,31 @@ func (c *triggers) CDC(ctx context.Context) error {
 }
 
 func (c *triggers) cdc(ctx context.Context) error {
-	if err := c.watcher.Add(filepath.Dir(c.meta.Filename)); err != nil {
-		return fmt.Errorf("%w: failed to add %q to fsnotify watcher", err, filepath.Dir(c.meta.Filename))
+	if err := c.signal.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start signal: %w", err)
 	}
-	watchTargets := make(map[string]bool)
-	watchTargets[c.meta.Filename] = true
-	if c.meta.WAL {
-		watchTargets[c.meta.Filename+"-wal"] = true
-		watchTargets[c.meta.Filename+"-shm"] = true
-	}
+
+	waker := c.signal.Waker()
 	for {
 		select {
 		case <-c.closed:
 			return nil
 		case <-ctx.Done():
 			return c.Close(ctx)
-		case event, ok := <-c.watcher.Events:
+		case event, ok := <-waker:
 			if !ok {
-				// The watcher was closed, most likely from an explicit call to
-				// CDC.Close.
 				return c.Close(ctx)
 			}
-			if event.Op == fsnotify.Chmod {
-				continue
+			if event.Err != nil {
+				_ = c.Close(ctx)
+				return fmt.Errorf("wake signal error: %w", event.Err)
 			}
-			if !watchTargets[event.Name] {
+			if !event.Wake {
 				continue
 			}
 			if err := c.drainChanges(ctx); err != nil {
 				return fmt.Errorf("%w: failed to process changes from the log", err)
 			}
-		case err, ok := <-c.watcher.Errors:
-			if !ok {
-				// The watcher was closed, most likely from an explicit call to
-				// CDC.Close.
-				return c.Close(ctx)
-			}
-			return fmt.Errorf("%w: fsnotify watcher error", err)
 		}
 	}
 }
@@ -394,13 +412,17 @@ func (c *triggers) Teardown(ctx context.Context) error {
 	return nil
 }
 func (c *triggers) Close(ctx context.Context) error {
+	var err error
 	c.closeOnce.Do(func() {
 		close(c.closed)
+		if c.signal != nil {
+			if cerr := c.signal.Close(); cerr != nil {
+				err = fmt.Errorf("failed to close wake signal: %w", cerr)
+				return
+			}
+		}
 	})
-	if err := c.watcher.Close(); err != nil {
-		return fmt.Errorf("%w: failed to close fsnotify watcher", err)
-	}
-	return c.db.Close()
+	return err
 }
 
 func (c *triggers) handle(ctx context.Context, changes Changes) error {

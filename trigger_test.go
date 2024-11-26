@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
@@ -43,53 +42,49 @@ func TestBootstrapWithRowID(t *testing.T) {
 	if count%batchSize != 0 {
 		expectedBatches = expectedBatches + 1
 	}
-
-	results := h.Changes()
-	require.Len(t, results, expectedBatches)
-	totalChanges := 0
-	for _, changes := range results {
-		totalChanges = totalChanges + len(changes)
-	}
-	require.Equal(t, count, totalChanges)
+	waitForChanges(t, h, expectedBatches, count, time.Second)
 }
 
 func TestCDCWithRowID(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	count := 1024
 	createTable(t, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	fsSignal, err := NewFSNotifySignal(db)
 	require.NoError(t, err)
-	defer c.Close(ctx)
+	timeSignal, err := NewTimeSignal(10 * time.Millisecond)
+	require.NoError(t, err)
+	signal, err := NewMultiSignal(fsSignal, timeSignal)
+	require.NoError(t, err)
+	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	require.NoError(t, err)
+	t.Cleanup(func() { c.Close(ctx) })
 
 	require.NoError(t, c.Setup(ctx))
 
+	cdcStatus := make(chan error, 1)
 	go func(t *testing.T, c CDC) {
-		assert.NoError(t, c.CDC(ctx))
+		t.Helper()
+		cdcStatus <- c.CDC(ctx)
 	}(t, c)
 	time.Sleep(5 * time.Millisecond) // force a scheduler break to get CDC going
 	generateRecords(t, db, count, 0)
-	time.Sleep(time.Second) // wait some time for CDC to finish
 
 	expectedBatches := count / batchSize
 	if count%batchSize != 0 {
 		expectedBatches = expectedBatches + 1
 	}
-	results := h.Changes()
-	require.Len(t, results, expectedBatches)
-	totalChanges := 0
-	for _, changes := range results {
-		totalChanges = totalChanges + len(changes)
-	}
-	require.Equal(t, count, totalChanges)
+	waitForChanges(t, h, expectedBatches, count, time.Second)
+	require.NoError(t, c.Close(ctx))
+	require.NoError(t, <-cdcStatus)
 }
 
 func TestBootstrapWithoutRowID(t *testing.T) {
@@ -129,118 +124,130 @@ func TestBootstrapWithoutRowID(t *testing.T) {
 func TestCDCWithoutRowID(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	count := 1024
 	createTableWithoutRowID(t, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	fsSignal, err := NewFSNotifySignal(db)
 	require.NoError(t, err)
-	defer c.Close(ctx)
+	timeSignal, err := NewTimeSignal(10 * time.Millisecond)
+	require.NoError(t, err)
+	signal, err := NewMultiSignal(fsSignal, timeSignal)
+	require.NoError(t, err)
+	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	require.NoError(t, err)
+	t.Cleanup(func() { c.Close(ctx) })
 
 	require.NoError(t, c.Setup(ctx))
 
+	cdcStatus := make(chan error, 1)
 	go func(t *testing.T, c CDC) {
-		assert.NoError(t, c.CDC(ctx))
+		t.Helper()
+		cdcStatus <- c.CDC(ctx)
 	}(t, c)
+
 	time.Sleep(5 * time.Millisecond) // force a scheduler break to get CDC going
 	generateRecords(t, db, count, 0)
-	time.Sleep(time.Second) // wait some time for CDC to finish
 
 	expectedBatches := count / batchSize
 	if count%batchSize != 0 {
 		expectedBatches = expectedBatches + 1
 	}
-	results := h.Changes()
-	require.Len(t, results, expectedBatches)
-	totalChanges := 0
-	for _, changes := range results {
-		totalChanges = totalChanges + len(changes)
-	}
-	require.Equal(t, count, totalChanges)
+	waitForChanges(t, h, expectedBatches, count, time.Second)
+	require.NoError(t, c.Close(ctx))
+	require.NoError(t, <-cdcStatus)
 }
 
 func TestBootstrapAndCDCWithRowID(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	count := 1024
 	createTable(t, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	fsSignal, err := NewFSNotifySignal(db)
 	require.NoError(t, err)
-	defer c.Close(ctx)
+	timeSignal, err := NewTimeSignal(10 * time.Millisecond)
+	require.NoError(t, err)
+	signal, err := NewMultiSignal(fsSignal, timeSignal)
+	require.NoError(t, err)
+	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	require.NoError(t, err)
+	t.Cleanup(func() { c.Close(ctx) })
 
 	require.NoError(t, c.Setup(ctx))
 	generateRecords(t, db, count, 0)
+
+	cdcStatus := make(chan error, 1)
 	go func(t *testing.T, c CDC) {
-		assert.NoError(t, c.CDC(ctx))
+		t.Helper()
+		cdcStatus <- c.BootstrapAndCDC(ctx)
 	}(t, c)
+
 	time.Sleep(5 * time.Millisecond) // force a scheduler break to get CDC going
 	generateRecords(t, db, count, count)
-	time.Sleep(time.Second) // wait some time for CDC to finish
-
 	expectedBatches := (count * 2) / batchSize
 	if (count*2)%batchSize != 0 {
 		expectedBatches = expectedBatches + 1
 	}
-	results := h.Changes()
-	require.Len(t, results, expectedBatches)
-	totalChanges := 0
-	for _, changes := range results {
-		totalChanges = totalChanges + len(changes)
-	}
-	require.Equal(t, count*2, totalChanges)
+	waitForChanges(t, h, expectedBatches, count*2, time.Second)
+	require.NoError(t, c.Close(ctx))
+	require.NoError(t, <-cdcStatus)
 }
 
 func TestBootstrapAndCDCWithoutRowID(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	count := 1024
 	createTableWithoutRowID(t, db)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	fsSignal, err := NewFSNotifySignal(db)
 	require.NoError(t, err)
-	defer c.Close(ctx)
+	timeSignal, err := NewTimeSignal(10 * time.Millisecond)
+	require.NoError(t, err)
+	signal, err := NewMultiSignal(fsSignal, timeSignal)
+	require.NoError(t, err)
+	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	require.NoError(t, err)
+	t.Cleanup(func() { c.Close(ctx) })
 
 	require.NoError(t, c.Setup(ctx))
 	generateRecords(t, db, count, 0)
+
+	cdcStatus := make(chan error, 1)
 	go func(t *testing.T, c CDC) {
-		assert.NoError(t, c.CDC(ctx))
+		t.Helper()
+		cdcStatus <- c.BootstrapAndCDC(ctx)
 	}(t, c)
+
 	time.Sleep(5 * time.Millisecond) // force a scheduler break to get CDC going
 	generateRecords(t, db, count, count)
-	time.Sleep(time.Second) // wait some time for CDC to finish
-
 	expectedBatches := (count * 2) / batchSize
 	if (count*2)%batchSize != 0 {
 		expectedBatches = expectedBatches + 1
 	}
-	results := h.Changes()
-	require.Len(t, results, expectedBatches)
-	totalChanges := 0
-	for _, changes := range results {
-		totalChanges = totalChanges + len(changes)
-	}
-	require.Equal(t, count*2, totalChanges)
+	waitForChanges(t, h, expectedBatches, count*2, time.Second)
+	require.NoError(t, c.Close(ctx))
+	require.NoError(t, <-cdcStatus)
 }
 
 func TestWideTables(t *testing.T) {
@@ -523,6 +530,33 @@ type tOrB interface {
 	TempDir() string
 }
 
+type testCDC struct {
+	db    *sql.DB
+	cdc   CDC
+	awake chan<- SignalEvent
+}
+
+func (c *testCDC) Cleanup() {
+	_ = c.db.Close()
+	_ = c.cdc.Close(context.Background())
+}
+
+func newTestCDC(t tOrB, handler ChangesHandler, options ...Option) *testCDC {
+	t.Helper()
+	db := testDB(t)
+	awake := make(chan SignalEvent)
+	signal, err := NewChannelSignal(awake)
+	require.NoError(t, err)
+	options = append(options, WithSignal(signal))
+	cdc, err := New(db, handler, []string{testTableName}, options...)
+	require.NoError(t, err)
+	return &testCDC{
+		db:    db,
+		cdc:   cdc,
+		awake: awake,
+	}
+}
+
 func testDB(t tOrB) *sql.DB {
 	t.Helper()
 	dir := t.TempDir()
@@ -530,6 +564,27 @@ func testDB(t tOrB) *sql.DB {
 	db, err := sql.Open("sqlite", filepath.Join(dir, "test.sqlite")+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
 	require.NoError(t, err)
 	return db
+}
+
+func waitForChanges(t tOrB, h *handler, expectedBatches int, expectedChanges int, timeout time.Duration) {
+	t.Helper()
+
+	results := make([]Changes, 0, expectedBatches)
+	totalChanges := 0
+	start := time.Now()
+	didTimeout := false
+	for len(results) < expectedBatches && totalChanges < expectedChanges {
+		if time.Since(start) > timeout {
+			didTimeout = true
+			break
+		}
+		results = append(results, h.Changes()...)
+		if len(results) > 0 {
+			totalChanges = totalChanges + len(results[len(results)-1])
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.False(t, didTimeout, "CDC did not complete in time. wanted %d but got %d", expectedChanges, totalChanges)
 }
 
 type handler struct {
