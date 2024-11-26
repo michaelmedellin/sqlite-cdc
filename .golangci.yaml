@@ -3,16 +3,12 @@ run:
   issues-exit-code: 2
   tests: true
   build-tags: []
-  skip-dirs:
-    - \.bin$
-    - \.coverage$
-  skip-dirs-use-default: true
-  skip-files: []
   modules-download-mode: readonly
   allow-parallel-runners: false
 
 output:
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
   print-issued-lines: true
   print-linter-name: true
   uniq-by-line: true
@@ -47,6 +43,10 @@ issues:
         - gosec
   exclude-use-default: true
   exclude-case-sensitive: false
+  exclude-dirs:
+    - \.bin$
+    - \.coverage$
+  exclude-dirs-use-default: true
   include: []
   max-issues-per-linter: 50
   max-same-issues: 3

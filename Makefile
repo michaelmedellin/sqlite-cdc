@@ -51,7 +51,7 @@ tools/update:
 	@ cd $(TOOLS_DIR) && GOBIN=$(BIN_DIR) $(GOCMD) mod tidy
 
 $(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+	@ mkdir -p $(BIN_DIR)
 
 generate:
 	@ go generate ./...
@@ -99,5 +99,5 @@ $(COVERAGE_COMBINED):
 	@ GOFLAGS="$(GOFLAGS)" \
  	$(BIN_DIR)/gocovmerge $(COVER_DIR)/*.out > $(COVERAGE_COMBINED)
 
-$(COVER_DIR): 
+$(COVER_DIR):
 	@ mkdir -p $(COVER_DIR)

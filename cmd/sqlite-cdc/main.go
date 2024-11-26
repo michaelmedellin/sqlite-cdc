@@ -22,8 +22,8 @@ import (
 
 type strList []string
 
-func (l strList) String() string {
-	return strings.Join(l, ",")
+func (l *strList) String() string {
+	return strings.Join(*l, ",")
 }
 
 func (l *strList) Set(s string) error {
