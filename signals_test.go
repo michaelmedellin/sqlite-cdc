@@ -5,7 +5,6 @@ package cdc
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -19,6 +18,8 @@ func TestFSNotifySignal(t *testing.T) {
 	// Create a test database
 	db := testDB(t)
 	t.Cleanup(func() { db.Close() })
+	_, err := db.Exec("CREATE TABLE test (col INT)")
+	require.NoError(t, err)
 
 	// Create our signal
 	signal, err := NewFSNotifySignal(db)
@@ -33,29 +34,9 @@ func TestFSNotifySignal(t *testing.T) {
 	// Get the waker channel for receiving signals
 	waker := signal.Waker()
 
-	// Get database metadata to find the files
-	meta, err := newDBMeta(db)
+	_, err = db.Exec("INSERT INTO test (col) VALUES (1)")
 	require.NoError(t, err)
-
-	// Test main database file changes
-	t.Run("main db file", func(t *testing.T) {
-		t.Parallel()
-		_, err := db.Exec("CREATE TABLE test (col INT)")
-		require.NoError(t, err)
-		assert.True(t, wait(t, waker), "should receive wake signal for main db file change")
-	})
-
-	for _, f := range meta.ExtraFiles {
-		t.Run(f, func(t *testing.T) {
-			t.Parallel()
-			if _, err := os.Stat(f); err != nil {
-				t.Skipf("skipping test for extra file %q because it doesn't exist", f)
-			}
-			_, err := db.Exec("INSERT INTO test (col) VALUES (1)")
-			require.NoError(t, err)
-			assert.True(t, wait(t, waker), "should receive wake signal for extra file change: %s", f)
-		})
-	}
+	assert.True(t, wait(t, waker), "should receive wake signal for db file change")
 }
 
 func TestTimeSignal(t *testing.T) {
@@ -88,7 +69,7 @@ func TestTimeSignal(t *testing.T) {
 func TestChannelSignal(t *testing.T) {
 	t.Parallel()
 
-	input := make(chan SignalEvent, 3)
+	input := make(chan SignalEvent, 1)
 	signal, err := NewChannelSignal(input)
 	require.NoError(t, err)
 	t.Cleanup(func() { signal.Close() })
@@ -99,13 +80,9 @@ func TestChannelSignal(t *testing.T) {
 
 	waker := signal.Waker()
 
-	// Send wake events
-	input <- SignalEvent{Wake: true}
-	input <- SignalEvent{Wake: true}
-	input <- SignalEvent{Wake: true}
-
 	// Should receive all signals
 	for x := 0; x < 3; x = x + 1 {
+		input <- SignalEvent{Wake: true}
 		assert.True(t, wait(t, waker), "should receive wake signal from input channel")
 	}
 

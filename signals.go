@@ -103,13 +103,21 @@ func (s *fSNotifySignal) watch(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			s.wake <- SignalEvent{Err: err}
+			select {
+			case s.wake <- SignalEvent{Err: err}:
+			case <-s.closed:
+				return
+			}
 			continue
 		}
 		if !ok {
 			continue
 		}
-		s.wake <- SignalEvent{Wake: true}
+		select {
+		case s.wake <- SignalEvent{Wake: true}:
+		case <-s.closed:
+			return
+		}
 	}
 }
 func (s *fSNotifySignal) watchStep(ctx context.Context) (bool, error) {
@@ -132,8 +140,7 @@ func (s *fSNotifySignal) watchStep(ctx context.Context) (bool, error) {
 		return true, nil
 	case err, ok := <-s.watcher.Errors:
 		if !ok {
-			// The watcher was closed, most likely from an explicit call to
-			// Close.
+			// The watcher was closed.
 			return false, s.Close()
 		}
 		return false, fmt.Errorf("%w: fsnotify watcher error", err)
@@ -149,7 +156,6 @@ func (s *fSNotifySignal) Waker() <-chan SignalEvent {
 func (s *fSNotifySignal) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		close(s.wake)
 	})
 	return s.watcher.Close()
 }
@@ -170,7 +176,7 @@ func NewTimeSignal(interval time.Duration) (Signal, error) {
 
 func newTimeSignal(interval time.Duration) *timeSignal {
 	return &timeSignal{
-		wake:      make(chan SignalEvent),
+		wake:      make(chan SignalEvent, 1),
 		closed:    make(chan any),
 		closeOnce: &sync.Once{},
 		interval:  interval,
@@ -192,13 +198,21 @@ func (s *timeSignal) watch(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			s.wake <- SignalEvent{Err: err}
+			select {
+			case s.wake <- SignalEvent{Err: err}:
+			case <-s.closed:
+				return
+			}
 			continue
 		}
 		if !ok {
 			continue
 		}
-		s.wake <- SignalEvent{Wake: true}
+		select {
+		case s.wake <- SignalEvent{Wake: true}:
+		case <-s.closed:
+			return
+		}
 	}
 }
 
@@ -220,7 +234,6 @@ func (s *timeSignal) Waker() <-chan SignalEvent {
 func (s *timeSignal) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		close(s.wake)
 	})
 	return nil
 }
@@ -259,7 +272,19 @@ func (s *channelSignal) watch(ctx context.Context) {
 		if errors.Is(err, errStop) {
 			return
 		}
-		s.wake <- event
+		if err != nil {
+			select {
+			case s.wake <- SignalEvent{Err: err}:
+			case <-s.closed:
+				return
+			}
+			continue
+		}
+		select {
+		case s.wake <- event:
+		case <-s.closed:
+			return
+		}
 	}
 }
 
@@ -282,7 +307,6 @@ func (s *channelSignal) Waker() <-chan SignalEvent {
 func (s *channelSignal) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closed)
-		close(s.wake)
 	})
 	return nil
 }
@@ -303,7 +327,7 @@ func NewMultiSignal(signals ...Signal) (Signal, error) {
 func newMultiSignal(signals ...Signal) *multiSignal {
 	return &multiSignal{
 		signals:   signals,
-		wake:      make(chan SignalEvent),
+		wake:      make(chan SignalEvent, len(signals)),
 		closed:    make(chan any),
 		closeOnce: &sync.Once{},
 	}
@@ -320,7 +344,19 @@ func (s *multiSignal) Start(ctx context.Context) error {
 		waker := signal.Waker()
 		go func() {
 			for event := range waker {
-				s.wake <- event
+				if event.Err != nil {
+					select {
+					case s.wake <- event:
+					case <-s.closed:
+						return
+					}
+					continue
+				}
+				select {
+				case s.wake <- event:
+				case <-s.closed:
+					return
+				}
 			}
 		}()
 	}
