@@ -29,7 +29,7 @@ func TestBootstrapWithRowID(t *testing.T) {
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -64,7 +64,7 @@ func TestCDCWithRowID(t *testing.T) {
 	require.NoError(t, err)
 	signal, err := NewMultiSignal(fsSignal, timeSignal)
 	require.NoError(t, err)
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close(ctx) })
 
@@ -98,7 +98,7 @@ func TestBootstrapWithoutRowID(t *testing.T) {
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,7 +118,7 @@ func TestBootstrapWithoutRowID(t *testing.T) {
 	for _, changes := range results {
 		totalChanges = totalChanges + len(changes)
 	}
-	require.Equal(t, count, totalChanges)
+	require.Equal(t, count+1, totalChanges) // +1 for the BOOTSTRAP event
 }
 
 func TestCDCWithoutRowID(t *testing.T) {
@@ -140,7 +140,7 @@ func TestCDCWithoutRowID(t *testing.T) {
 	require.NoError(t, err)
 	signal, err := NewMultiSignal(fsSignal, timeSignal)
 	require.NoError(t, err)
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close(ctx) })
 
@@ -183,7 +183,7 @@ func TestBootstrapAndCDCWithRowID(t *testing.T) {
 	require.NoError(t, err)
 	signal, err := NewMultiSignal(fsSignal, timeSignal)
 	require.NoError(t, err)
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close(ctx) })
 
@@ -226,7 +226,7 @@ func TestBootstrapAndCDCWithoutRowID(t *testing.T) {
 	require.NoError(t, err)
 	signal, err := NewMultiSignal(fsSignal, timeSignal)
 	require.NoError(t, err)
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true), WithSignal(signal))
 	require.NoError(t, err)
 	t.Cleanup(func() { c.Close(ctx) })
 
@@ -284,7 +284,7 @@ func TestWideTables(t *testing.T) {
 
 	h := newHandler()
 	batchSize := defaultMaxBatchSize
-	c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+	c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -295,8 +295,10 @@ func TestWideTables(t *testing.T) {
 
 	results := h.Changes()
 	require.Len(t, results, 1)
-	require.Len(t, results[0], 1)
+	require.Len(t, results[0], 2)
 	ch := results[0][0]
+	require.Equal(t, Bootstrap, ch.Operation)
+	ch = results[0][1]
 	afterMap := make(map[string]any)
 	require.NoError(t, json.Unmarshal(ch.After, &afterMap))
 	require.Len(t, afterMap, columnCount)
@@ -339,10 +341,10 @@ func BenchmarkTableSizes(b *testing.B) {
 			defer cancel()
 			h := &handlerNull{}
 			batchSize := defaultMaxBatchSize
-			c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+			c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
 			require.NoError(b, err)
 			defer c.Close(ctx)
-			trig := c.(*triggers)
+			trig := c.(*TriggerEngine)
 
 			b.ResetTimer()
 			for n := 0; n < b.N; n = n + 1 {
@@ -394,10 +396,10 @@ func BenchmarkBootstrapSizes(b *testing.B) {
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 					h := &handlerNull{}
-					c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+					c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
 					require.NoError(b, err)
 					defer c.Close(ctx)
-					trig := c.(*triggers)
+					trig := c.(*TriggerEngine)
 
 					b.ResetTimer()
 					for n := 0; n < b.N; n = n + 1 {
@@ -430,10 +432,10 @@ func BenchmarkBlobSizes(b *testing.B) {
 			defer cancel()
 			h := &handlerNull{}
 			batchSize := defaultMaxBatchSize
-			c, err := New(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
+			c, err := NewTriggerEngine(db, h, []string{testTableName}, WithMaxBatchSize(batchSize), WithBlobSupport(true))
 			require.NoError(b, err)
 			defer c.Close(ctx)
-			trig := c.(*triggers)
+			trig := c.(*TriggerEngine)
 
 			b.ResetTimer()
 			for n := 0; n < b.N; n = n + 1 {
@@ -548,7 +550,7 @@ func newTestCDC(t tOrB, handler ChangesHandler, options ...Option) *testCDC {
 	signal, err := NewChannelSignal(awake)
 	require.NoError(t, err)
 	options = append(options, WithSignal(signal))
-	cdc, err := New(db, handler, []string{testTableName}, options...)
+	cdc, err := NewTriggerEngine(db, handler, []string{testTableName}, options...)
 	require.NoError(t, err)
 	return &testCDC{
 		db:    db,

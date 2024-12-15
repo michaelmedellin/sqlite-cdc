@@ -89,7 +89,7 @@ func main() {
 		}
 	}
 
-	c, err := cdc.New(db, handler, f.tables,
+	c, err := cdc.NewTriggerEngine(db, handler, f.tables,
 		cdc.WithMaxBatchSize(f.batchSize),
 		cdc.WithLogTableName(f.logTableName),
 		cdc.WithoutSubsecondTime(f.disableSubsec),
