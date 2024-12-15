@@ -8,6 +8,7 @@ GOTOOLS = $(shell grep '_' $(TOOLS_DIR)/tools.go | sed 's/[[:space:]]*_//g' | se
 BUILD_DIR = $(PROJECT_PATH)/.build
 TOOLS_DIR = $(PROJECT_PATH)/internal/tools
 TOOLS_FILE = $(TOOLS_DIR)/tools.go
+DIST_DIR = $(PROJECT_PATH)/dist
 BIN_DIR = $(PROJECT_PATH)/.bin
 COVER_DIR = $(BUILD_DIR)/.coverage
 COVERAGE_UNIT = $(COVER_DIR)/unit.out
@@ -21,6 +22,11 @@ COVERAGE_COMBINED_XML = $(COVERAGE_COMBINED:.out=.xml)
 GOIMPORT_LOCAL = github.com/kevinconway
 GOLANGCILINT_CONFIG = $(PROJECT_PATH)/.golangci.yaml
 GOCMD = GOFLAGS=$(GOFLAGS) go
+BUILD_MODE = local
+BUILD_FLAGS = --clean
+ifneq ($(BUILD_MODE),tag)
+	BUILD_FLAGS = --clean --snapshot
+endif
 
 #######
 # https://stackoverflow.com/a/10858332
@@ -31,6 +37,12 @@ __check_defined = \
     $(if $(value $1),, \
       $(error Undefined $1$(if $2, ($2))))
 #######
+
+build: | $(BIN_DIR) $(DIST_DIR)
+	@ $(BIN_DIR)/goreleaser build $(BUILD_FLAGS)
+
+release: | $(BIN_DIR) $(DIST_DIR)
+	@ $(BIN_DIR)/goreleaser release --clean
 
 test: test/lint test/unit test/coverage
 
@@ -62,9 +74,12 @@ fmt: | $(BIN_DIR)
 		-local $(GOIMPORT_LOCAL) \
 		$(shell find . -type f -name '*.go' -not -path "./vendor/*")
 
-clean: clean/test clean/tools
+clean: clean/test clean/tools clean/build
+clean/build:
 	@:$(call check_defined,BUILD_DIR)
 	@ rm -rf "$(BUILD_DIR)"
+	@:$(call check_defined,DIST_DIR)
+	@ rm -rf "$(DIST_DIR)"
 clean/test:
 	@:$(call check_defined,COVER_DIR)
 	@ rm -rf "$(COVER_DIR)"
@@ -74,7 +89,7 @@ clean/tools:
 
 
 $(COVERAGE_UNIT): $(shell find . -type f -name '*.go' -not -path "./vendor/*") | $(COVER_DIR)
-	$(GOCMD) test \
+	@ $(GOCMD) test \
 		-v \
 		-cover \
 		-race \
@@ -99,5 +114,8 @@ $(COVERAGE_COMBINED):
 	@ GOFLAGS="$(GOFLAGS)" \
  	$(BIN_DIR)/gocovmerge $(COVER_DIR)/*.out > $(COVERAGE_COMBINED)
 
-$(COVER_DIR):
+$(COVER_DIR): | $(BUILD_DIR)
 	@ mkdir -p $(COVER_DIR)
+
+$(BUILD_DIR):
+	@ mkdir -p $(BUILD_DIR)
