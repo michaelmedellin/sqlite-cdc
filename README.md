@@ -43,15 +43,55 @@ If you end up doing your own testing or experimentation with this project then
 please let me know your results. I'd be grateful for any success or failure you
 can share.
 
-## Running The Example Executable
+## Adding CDC To A Database
 
-The quickest way to try things out is to use the example executable in
-`cmd/sqlite-cdc`. Point it to any existing SQLite database that you're
-comfortable testing with and then make changes to your selected tables to see
-CDC events stream to the console:
+The included `cmd/sqlite-cdc-setup` command can be used to add or remove CDC
+support from a database. This command attaches triggers to a target set of
+tables that automatically populate a change log table named `__cdc_log` by
+default.
+
 ```bash
-go run cmd/sqlite-cdc/main.go --output json --db test.sqlite --table my_table --setup --bootstrap --cdc
+go run cmd/sqlite-cdc-setup/main.go --db test.sqlite --table my_table --setup
+go run cmd/sqlite-cdc-setup/main.go --db test.sqlite --table my_table --teardown
 ```
+
+Use the `--help` flag to get a summary of the options. For convenience:
+```
+Usage of sqlite-cdc-setup:
+  -blobs
+        Enable support for blobs
+  -db string
+        SQLite file path
+  -db-params string
+        SQLite connection parameters. See <https://pkg.go.dev/modernc.org/sqlite#Driver.Open> for parameter syntax (default "_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
+  -disable-subsec
+        Disable subsecond time resolution to support old clients
+  -log-table string
+        Name of the table to store CDC log entries (default "__cdc_log")
+  -setup
+        Perform initial setup of the database for CDC before starting in any mode
+  -table value
+        A table name to monitor. Can be specified multiple times
+  -teardown
+        Perform teardown of the CDC tables and triggers. Setting the teardown flag prevents any other action. The process will perform the teardown and then exit
+  -version
+        Print version and exit
+```
+
+### Running The Example Processor
+
+The easiest way to test the changelog table and process the contents is to use
+the `cmd/sqlite-cdc` command. To see CDC events streamed to the console use
+something like:
+
+```bash
+go run cmd/sqlite-cdc/main.go --output json --db test.sqlite --table my_table --bootstrap --cdc
+```
+
+This will begin streaming JSON encoded change events to the console starting
+with an event for every existing row followed by events from the changelog
+table:
+
 ```json
 {
     "table":"my_table",
@@ -78,51 +118,43 @@ go run cmd/sqlite-cdc/main.go --output json --db test.sqlite --table my_table --
 }
 ```
 
-When you're done testing you can run the following to clean up all CDC artifacts
-from your database:
-```bash
-go run cmd/sqlite-cdc/main.go --db test.sqlite --table my_table --teardown
-```
-
 Use the `--help` flag to see all the available options. Here's a snapshot of
 what's available:
 ```
 Usage of sqlite-cdc:
-  --batch-size int
+  -batch-size int
         The max number of log entries to collect in each batch (default 256)
-  --blobs
-        Enable support for blobs.
-  --bootstrap
+  -blobs
+        Enable support for blobs
+  -bootstrap
         Read all existing records as if they are inserts and then exit. If this flag is set in addition to the cdc flag the cdc mode will begin after the bootstrap is complete
-  --cdc
+  -cdc
         Run a continuous extraction of the CDC log.
-  --db string
+  -db string
         SQLite file path
-  --db-params string
+  -db-params string
         SQLite connection parameters. See <https://pkg.go.dev/modernc.org/sqlite#Driver.Open> for parameter syntax (default "_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
-  --disable-subsec
+  -disable-subsec
         Disable subsecond time resolution to support old clients
-  --log-table string
+  -log-table string
         Name of the table to store CDC log entries (default "__cdc_log")
-  --output string
+  -output string
         Write destination for log entries. Valid options are - for simplified stdout, json for full JSON stdout, or an HTTP URL that will receive POST requests containing batches of log entries. See <pkg.go.dev/github.com/kevinconway/sqlite-cdc/handlers#HTTP> for more. (default "-")
-  --setup
-        Perform initial setup of the database for CDC before starting in any mode
-  --table value
+  -table value
         A table name to monitor. Can be specified multiple times
-  --teardown
-        Perform teardown of the CDC tables and triggers. Setting the teardown flag prevents any other action. The process will perform the teardown and then exit
+  -version
+        Print version and exit
 ```
 
-### Limits Of The Executable
+### Limits Of The Provided Processor
 
-The example exists primarily for demonstrations and for quickly performing an
-initial test of the system. In most cases, I expect that you will use the
-example as a template for creating your own custom build that integrates your
-own event handling logic and better integrates with your runtime environment by,
-for example, adding instrumentation.
+The example processor exists primarily for demonstrations and for quickly
+performing an initial test of the system. In most cases, I expect that you will
+use the example as a template for creating your own custom build that integrates
+your own event handling logic and better integrates with your runtime
+environment by, for example, adding instrumentation.
 
-As is, the example executable can perform all the CDC responsibilities but
+As is, the example processor can perform all the CDC responsibilities but
 supports only three outputs:
 
 - Simplified logging to STDOUT (ex: `<timestamp>: <table> <operation>`)
@@ -265,7 +297,7 @@ environment where SQLite is being used as a data structure rather than a typical
 SQL database. Sessions work best when more tightly integrated into application
 logic and aren't well suited for this project's "bolt-on" or sidecar model.
 
-## Performance Impacts
+## Performance Impacts Of The CDC Triggers
 
 I don't yet have any production performance metrics to share. Until then, the
 code includes benchmarks that attempt to measure the performance impacts of the
