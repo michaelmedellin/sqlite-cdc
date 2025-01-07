@@ -4,7 +4,8 @@ RUN apt-get update && apt-get install --yes \
     curl wget gpg \
     make git vim less \
     sudo \
-    bash-completion man
+    bash-completion man \
+    gnuplot
 
 # Create a non-root user so linux users can run the container as the current
 # OS user. See https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user

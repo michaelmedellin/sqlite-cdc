@@ -6,7 +6,7 @@
 
 This project implements change-data-capture, or CDC, for SQLite databases. The
 current implementation works by installing triggers on target tables that record
-the before and after states of a table modification to a change log table. The
+the before and after states of a row modification to a change log table. The
 engine then watches the SQLite files for changes, reads batches of change
 records, and then sends them to a configurable destination for processing.
 
@@ -31,11 +31,17 @@ between independent databases.
 
 ## Project Status
 
-Consider this project alpha or a work-in-progress.
+Consider this project in alpha or a work-in-progress state.
 
-My plan is to get this running in a real system by the end of 2024 and collect
-some data on performance and reliability, especially in a highly concurrent
-read/write environment.
+My original plan was to put this in production by the end of 2024 but I've
+missed that goal. As of writing, I've only tested the project on small scale,
+non-production workloads. I've also added some benchmarks to help set
+expectations or estimates around performance impacts but they aren't guaranteed
+to be accurate for production workloads. Use at your own risk.
+
+If you end up doing your own testing or experimentation with this project then
+please let me know your results. I'd be grateful for any success or failure you
+can share.
 
 ## Running The Example Executable
 
@@ -259,6 +265,111 @@ environment where SQLite is being used as a data structure rather than a typical
 SQL database. Sessions work best when more tightly integrated into application
 logic and aren't well suited for this project's "bolt-on" or sidecar model.
 
+## Performance Impacts
+
+I don't yet have any production performance metrics to share. Until then, the
+code includes benchmarks that attempt to measure the performance impacts of the
+change capture triggers and the different ways they manage or encode data. The
+benchmarks are run with the following pragmas:
+
+- journal_mode(wal)
+- busy_timeout(5000)
+- synchronous(normal)
+- foreign_keys(on)
+
+You can run the suite of benchmarks using either standard Go tooling or the
+included `make benchmarks` rule. The Makefile rule generates a set of benchmark
+outputs in `.build/.bench/` that contain 20 runs of each benchmark. The `make
+benchmark-reports` rule will generate a comparative analysis of the contents of
+each output file as a CSV. Note that the full suite of benchmarks can take
+potentially more than an hour to complete.
+
+The results below are based on running the benchmarks on a local workstation.
+The workstation was not dedicated to the benchmarks and subject to jitter. I've
+included the percent differences but not the absolute values because the
+absolute values will differ based on hardware but the percent differences should
+be somewhat consistent across different hardware configurations. For a sense of
+scale, the absolute values for individual operations without triggers, in my
+test runs, were in the magnitude of 10s of microseconds.
+
+My personal interpretation of the overall results is that the CDC triggers add
+marginal write performance overhead for the majority of use cases.
+
+### Simple Tables
+
+The "simple" table benchmarks are run without concurrency and compare the cost
+of insert, update, and delete statements. The tables used in these benchmarks
+are defined with all integer columns, an integer primary key, and without ROWID.
+The number of columns never exceeds 63 which is the maximum count that can be
+converted to a CDC record by the triggers in a single step.
+
+| Columns | Insert (% Difference) | Update (% Difference) | Delete (% Difference) |
+| ------- | ------------- | ------------- | ------------- |
+|2 | 97% | 100% | 113% |
+|4 | 96% | 96% | 105% |
+|8 | 93% | 99% | 111% |
+|16 | 99% | 111% | 127% |
+|32 | 106% | 158% | 153% |
+|64 | 105% | 179% | 203% |
+
+![A graph showing the growth of performance impacts of the CDC triggers on inserts, updates, and deletes as the number of columns to merge grows.](./images/simple-tables.svg)
+
+For most table sizes the average overhead appears to be around 100% compared to
+a single operation which matches the expectations of the triggers adding an
+additional insert for each modifying operation. The overhead of the JSON
+encoding of the data appears minimal for small table but grows with column
+count.
+
+### Wide Tables
+
+The wide table benchmarks are the same as the simple table benchmarks but the
+tables are always larger than 63 columns. This engages a workaround for the max
+SQLite function parameter limit which is 127. To generate JSON objects with more
+than 63 key/value pairs the system computes objects in batches of up to 63
+columns and then merges the results using the json_patch function. The
+performance impacts grow relative to the number of objects that must be merged.
+Here's a table and graph illustrating the performance impacts of wide tables:
+
+| Columns | Insert (% Difference) | Update (% Difference) | Delete (% Difference) |
+| ------- | ------------- | ------------- | ------------- |
+| 64 |  119% | 225% | 251% |
+| 128 | 195% | 335% | 556% |
+| 256 | 412% | 696% | 1,434% |
+| 512 | 1,011% | 1,558% | 4,948% |
+| 1000 | 3,263% | 3,872% | 33,814% |
+
+![A graph showing the growth of performance impacts as the number of objects to merge grows.](./images/wide-tables.svg)
+
+The overhead for wide tables appears to grow linearly with the number of objects
+that must be merged with the exception of deletes with 1000 columns. I don't
+have an explanation for that discontinuity yet.
+
+### BLOB Data
+
+All BLOB data must be encoded to be JSON compatible. The impact of the encoding
+process grows with the size of the BLOB. Here's a table and graph showing the
+growth of encoding time as the byte size increases:
+
+| Blob Size | Percent Slower Than 16 Bytes |
+| ------- | ------------- |
+| 16 | 0% |
+| 64 | 67% |
+| 256 | 64% |
+| 1024 | 69% |
+| 4096 | 74% |
+| 16384 | 85% |
+| 32768 | 102% |
+| 65536 | 126% |
+| 131072 | 187% |
+| 262144 | 287% |
+| 524288 | 510% |
+| 1048576 | 937% |
+
+![A graph showing the growth of performance impacts as the size of BLOB data grows.](./images/blob-data.svg)
+
+For a sense of scale, the encoding of 16 bytes took an average of about 46
+microseconds on my particular workstation.
+
 ## Compatibility With Other Replication Tools
 
 I have not yet tested with any of the SQLite replication tools I know about:
@@ -268,15 +379,16 @@ I have not yet tested with any of the SQLite replication tools I know about:
 - <https://github.com/maxpert/marmot>
 - <https://github.com/rqlite/rqlite>
 
-I expect that `rqlite` is incompatible because it requires all database writes
-to happen through an HTTP API and this project expects to write through a SQLite
-client. I also expect that `litefs` is incompatible because it operates through
-FUSE which prevents sqlite-cdc from detecting file changes. Though, it's
-possible that using time based polling of the log rather than file change
-notifications from the filesystem would provide compatibility with `litefs`.
+This tool should be compatible with any SQLite implementation or modification
+that supports using a standard SQLite client. This means that `rqlite` is not
+compatible because it requires all database writes to happen through an HTTP API
+rather than a SQLite client. SQLite derivatives that work through a custom
+filesystem, such as `litefs` may work but likely cannot rely on the integrated
+filesystem watcher to detect SQLite file changes. The workaround is to use the
+time interval based polling for changes that is included.
 
 The `litestream` project _should_ be compatible because it uses a standard
-file system and supports arbitrary SQLite clients. I also suspect `marmot` is
+filesystem and supports arbitrary SQLite clients. I also suspect `marmot` is
 compatible but redundant because it implements a very similar trigger based
 system to this project.
 
@@ -285,8 +397,11 @@ system to this project.
 This project only requires a Go installation to work on and is compatible with
 standard Go tooling. For example, you can run `go test ./...` to run the tests.
 
-I have also included a `Makefile` with the following rules:
+For convenience, I've included a devcontainer configuration and a `Makefile`
+with the following rules:
 
+- build
+      - Create executables for both CLIs
 - test
       - Run all test suites
 - test/lint
@@ -295,6 +410,10 @@ I have also included a `Makefile` with the following rules:
       - Run unit tests
 - test/coverage
       - Generate a coverage report
+- benchmarks
+      - Run all benchmarks (NOTE: This can take a long time)
+- benchmark-reports
+      - Generate comparison reports from benchmarks
 - tools
       - Download any Go tooling used for project automation
 - tools/update

@@ -304,385 +304,116 @@ func TestWideTables(t *testing.T) {
 	require.Len(t, afterMap, columnCount)
 }
 
-// This benchmark measures the added latency of the CDC triggers.
+var (
+	smallColumnCounts = []int{2, 4, 8, 16, 32, 63}     //nolint:gochecknoglobals
+	largeColumnCounts = []int{64, 128, 256, 512, 1000} //nolint:gochecknoglobals
+)
+
+// This benchmark measures the added latency of the CDC triggers for inserts.
 //
 // The tables used in this benchmark have a simplistic structure where all
 // columns are integer types. The number of columns varies by the test case but
 // never exceeds the 63 column limit for generating a change event in a single
-// step. Each table is tested with the triggers on and off so to highlight the
+// step. Each table is tested with the triggers on and off to highlight the
 // added latency of the triggers.
 //
 // All of the writes are applied serially so there is no impact from concurrent
 // writes.
-func BenchmarkTriggerLatencySimpleTableSerialChanges(b *testing.B) {
-	columnCounts := []int{1, 2, 4, 8, 16, 32, 63}
-	for _, columnCount := range columnCounts {
-		b.Run(fmt.Sprintf("triggers=off/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			b.ResetTimer()
-			for n := 0; n < b.N; n = n + 1 {
-				_, err = db.Exec(query, params...)
-				require.NoError(b, err)
-			}
-		})
-		b.Run(fmt.Sprintf("triggers=on/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			c, err := NewTriggerEngine(db, &handlerNull{}, []string{testTableName}, WithBlobSupport(true))
-			require.NoError(b, err)
-			defer c.Close(context.Background())
-			require.NoError(b, c.Setup(context.Background()))
-
-			b.ResetTimer()
-			for n := 0; n < b.N; n = n + 1 {
-				_, err = db.Exec(query, params...)
-				require.NoError(b, err)
-			}
-		})
+func BenchmarkTriggerLatencySimpleTableSerialInserts(b *testing.B) {
+	for _, columnCount := range smallColumnCounts {
+		benchmarkTriggerLatencyTableSerial(b, columnCount, OpInsert)
 	}
 }
 
-// This benchmark measures the added latency of the CDC triggers.
+// This benchmark measures the added latency of the CDC triggers for updates.
 //
 // The tables used in this benchmark have a simplistic structure where all
 // columns are integer types. The number of columns varies by the test case but
 // never exceeds the 63 column limit for generating a change event in a single
-// step. Each table is tested with the triggers on and off so to highlight the
+// step. Each table is tested with the triggers on and off to highlight the
 // added latency of the triggers.
 //
-// Writes are applied concurrently.
-func BenchmarkTriggerLatencySimpleTableConcurrentChanges(b *testing.B) {
-	columnCounts := []int{1, 2, 4, 8, 16, 32, 63}
-	for _, columnCount := range columnCounts {
-		b.Run(fmt.Sprintf("triggers=off/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					_, err = db.Exec(query, params...)
-					require.NoError(b, err)
-				}
-			})
-		})
-		b.Run(fmt.Sprintf("triggers=on/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			c, err := NewTriggerEngine(db, &handlerNull{}, []string{testTableName}, WithBlobSupport(true))
-			require.NoError(b, err)
-			defer c.Close(context.Background())
-			require.NoError(b, c.Setup(context.Background()))
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					_, err = db.Exec(query, params...)
-					require.NoError(b, err)
-				}
-			})
-		})
-	}
-}
-
-// This benchmark measures the added latency of triggers for wide tables.
-//
-// The tables used in this benchmark have a simplistic structure where all
-// columns are integer types. The number of columns varies by the test case but
-// always exceeds the 63 column limit for generating a change event in a single
-// step. This engages the alternative change record construction logic that
-// relies on using json_patch to accumulate an object that would otherwise be
-// too big to generate in a single SQLite function call. Each table is tested
-// with the triggers on and off so to highlight the added latency of the triggers.
+// The table is populated with enough records that each step of the benchmark
+// operates on a unique row. All columns in each row are updated in each step.
 //
 // All of the writes are applied serially so there is no impact from concurrent
 // writes.
-func BenchmarkTriggerLatencyLargeTableSerialChanges(b *testing.B) {
-	columnCounts := []int{64, 128, 256, 512}
-	for _, columnCount := range columnCounts {
-		b.Run(fmt.Sprintf("triggers=off/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			b.ResetTimer()
-			for n := 0; n < b.N; n = n + 1 {
-				_, err = db.Exec(query, params...)
-				require.NoError(b, err)
-			}
-		})
-		b.Run(fmt.Sprintf("triggers=on/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			c, err := NewTriggerEngine(db, &handlerNull{}, []string{testTableName}, WithBlobSupport(true))
-			require.NoError(b, err)
-			defer c.Close(context.Background())
-			require.NoError(b, c.Setup(context.Background()))
-
-			b.ResetTimer()
-			for n := 0; n < b.N; n = n + 1 {
-				_, err = db.Exec(query, params...)
-				require.NoError(b, err)
-			}
-		})
+func BenchmarkTriggerLatencySimpleTableSerialUpdates(b *testing.B) {
+	for _, columnCount := range smallColumnCounts {
+		benchmarkTriggerLatencyTableSerial(b, columnCount, OpUpdate)
 	}
 }
 
-// This benchmark measures the added latency of triggers for wide tables.
+// This benchmark measures the added latency of the CDC triggers for deletes.
+//
+// The tables used in this benchmark have a simplistic structure where all
+// columns are integer types. The number of columns varies by the test case but
+// never exceeds the 63 column limit for generating a change event in a single
+// step. Each table is tested with the triggers on and off to highlight the
+// added latency of the triggers.
+//
+// The table is populated with enough records that each step of the benchmark
+// operates on a unique row. Each step deletes a row.
+//
+// All of the writes are applied serially so there is no impact from concurrent
+// writes.
+func BenchmarkTriggerLatencySimpleTableSerialDeletes(b *testing.B) {
+	for _, columnCount := range smallColumnCounts {
+		benchmarkTriggerLatencyTableSerial(b, columnCount, OpDelete)
+	}
+}
+
+// Measure the latency of inserts in wide tables.
 //
 // The tables used in this benchmark have a simplistic structure where all
 // columns are integer types. The number of columns varies by the test case but
 // always exceeds the 63 column limit for generating a change event in a single
-// step. This engages the alternative change record construction logic that
-// relies on using json_patch to accumulate an object that would otherwise be
-// too big to generate in a single SQLite function call. Each table is tested
-// with the triggers on and off so to highlight the added latency of the triggers.
+// step. Each table is tested with the triggers on and off to highlight the
+// added latency of the triggers.
 //
-// All of the writes are applied concurrently.
-func BenchmarkTriggerLatencyLargeTableConcurrentChanges(b *testing.B) {
-	columnCounts := []int{64, 128, 256, 512}
-	for _, columnCount := range columnCounts {
-		b.Run(fmt.Sprintf("triggers=off/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
+// All of the writes are applied serially so there is no impact from concurrent
+// writes.
+func BenchmarkTriggerLatencyWideTableSerialInserts(b *testing.B) {
+	for _, columnCount := range largeColumnCounts {
+		benchmarkTriggerLatencyTableSerial(b, columnCount, OpInsert)
+	}
+}
 
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
+// Measure the latency of updates in wide tables.
+//
+// The tables used in this benchmark have a simplistic structure where all
+// columns are integer types. The number of columns varies by the test case but
+// always exceeds the 63 column limit for generating a change event in a single
+// step. Each table is tested with the triggers on and off to highlight the
+// added latency of the triggers.
+//
+// The table is populated with enough records that each step of the benchmark
+// operates on a unique row. All columns in each row are updated in each step.
+//
+// All of the writes are applied serially so there is no impact from concurrent
+// writes.
+func BenchmarkTriggerLatencyWideTableSerialUpdates(b *testing.B) {
+	for _, columnCount := range largeColumnCounts {
+		benchmarkTriggerLatencyTableSerial(b, columnCount, OpUpdate)
+	}
+}
 
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					_, err = db.Exec(query, params...)
-					require.NoError(b, err)
-				}
-			})
-		})
-		b.Run(fmt.Sprintf("triggers=on/columns=%d", columnCount), func(b *testing.B) {
-			db := testDB(b)
-			defer db.Close()
-
-			var builder strings.Builder
-			builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				builder.WriteString(fmt.Sprintf("col%d INT", x))
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			_, err := db.Exec(builder.String())
-			require.NoError(b, err)
-
-			builder.Reset()
-			params := make([]any, columnCount)
-			builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
-			for x := 0; x < columnCount; x = x + 1 {
-				params[x] = x
-				builder.WriteString("?")
-				if x < columnCount-1 {
-					builder.WriteString(", ")
-				}
-			}
-			builder.WriteString(")")
-			query := builder.String()
-			builder.Reset()
-
-			c, err := NewTriggerEngine(db, &handlerNull{}, []string{testTableName}, WithBlobSupport(true))
-			require.NoError(b, err)
-			defer c.Close(context.Background())
-			require.NoError(b, c.Setup(context.Background()))
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					_, err = db.Exec(query, params...)
-					require.NoError(b, err)
-				}
-			})
-		})
+// Measure the latency of deletes in wide tables.
+//
+// The tables used in this benchmark have a simplistic structure where all
+// columns are integer types. The number of columns varies by the test case but
+// always exceeds the 63 column limit for generating a change event in a single
+// step. Each table is tested with the triggers on and off to highlight the
+// added latency of the triggers.
+//
+// The table is populated with enough records that each step of the benchmark
+// operates on a unique row. Each step deletes a row.
+//
+// All of the writes are applied serially so there is no impact from concurrent
+// writes.
+func BenchmarkTriggerLatencyWideTableSerialDeletes(b *testing.B) {
+	for _, columnCount := range largeColumnCounts {
+		benchmarkTriggerLatencyTableSerial(b, columnCount, OpDelete)
 	}
 }
 
@@ -723,6 +454,148 @@ func BenchmarkBlobEncoding(b *testing.B) {
 			}
 		})
 	}
+}
+
+type OpType string
+
+const (
+	OpInsert OpType = "insert"
+	OpUpdate OpType = "update"
+	OpDelete OpType = "delete"
+)
+
+func benchmarkTriggerLatencyTableSerial(b *testing.B, columnCount int, op OpType) {
+	b.Helper()
+
+	b.Run(fmt.Sprintf("triggers=off/columns=%d", columnCount), func(b *testing.B) {
+		b.StopTimer()
+		db := testDB(b)
+		defer db.Close()
+
+		query, params := setupBenchmarkTable(b, db, columnCount, op, b.N)
+
+		b.ResetTimer()
+		b.StartTimer()
+		for n := 0; n < b.N; n = n + 1 {
+			if op != OpInsert {
+				params[len(params)-1] = n
+			}
+			if op == OpInsert {
+				params[0] = n
+			}
+			_, err := db.Exec(query, params...)
+			require.NoError(b, err)
+		}
+	})
+
+	b.Run(fmt.Sprintf("triggers=on/columns=%d", columnCount), func(b *testing.B) {
+		b.StopTimer()
+		db := testDB(b)
+		defer db.Close()
+
+		query, params := setupBenchmarkTable(b, db, columnCount, op, b.N)
+
+		c, err := NewTriggerEngine(db, &handlerNull{}, []string{testTableName}, WithBlobSupport(true))
+		require.NoError(b, err)
+		defer c.Close(context.Background())
+		require.NoError(b, c.Setup(context.Background()))
+
+		b.ResetTimer()
+		b.StartTimer()
+		for n := 0; n < b.N; n = n + 1 {
+			if op != OpInsert {
+				params[len(params)-1] = n
+			}
+			if op == OpInsert {
+				params[0] = n
+			}
+			_, err = db.Exec(query, params...)
+			require.NoError(b, err)
+		}
+	})
+}
+
+func setupBenchmarkTable(b *testing.B, db *sql.DB, columnCount int, op OpType, n int) (string, []any) {
+	b.Helper()
+
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("CREATE TABLE %s (", testTableName))
+	for x := 0; x < columnCount; x = x + 1 {
+		builder.WriteString(fmt.Sprintf("col%d INT", x))
+		if x == 0 {
+			builder.WriteString(" PRIMARY KEY")
+		}
+		if x < columnCount-1 {
+			builder.WriteString(", ")
+		}
+	}
+	builder.WriteString(") WITHOUT ROWID")
+	_, err := db.Exec(builder.String())
+	require.NoError(b, err)
+
+	// For updates and deletes, we need initial data
+	if op != OpInsert {
+		builder.Reset()
+		params := make([]any, columnCount)
+		builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
+		for x := 0; x < columnCount; x = x + 1 {
+			params[x] = x
+			builder.WriteString("?")
+			if x < columnCount-1 {
+				builder.WriteString(", ")
+			}
+		}
+		builder.WriteString(")")
+		query := builder.String()
+
+		// Insert a record count equal to the requested benchmark operation count
+		for x := 0; x < n; x = x + 1 {
+			params[0] = x
+			_, err = db.Exec(query, params...)
+			require.NoError(b, err)
+		}
+	}
+
+	// Prepare the operation query
+	var query string
+	var params []any
+	switch op {
+	case OpInsert:
+		builder.Reset()
+		params = make([]any, columnCount)
+		builder.WriteString(fmt.Sprintf("INSERT INTO %s VALUES (", testTableName))
+		for x := 0; x < columnCount; x = x + 1 {
+			params[x] = x
+			builder.WriteString("?")
+			if x < columnCount-1 {
+				builder.WriteString(", ")
+			}
+		}
+		builder.WriteString(")")
+		query = builder.String()
+	case OpUpdate:
+		builder.Reset()
+		params = make([]any, columnCount)
+		builder.WriteString(fmt.Sprintf("UPDATE %s SET ", testTableName))
+		for x := 1; x < columnCount; x = x + 1 {
+			// Set all the columns to a value greater than the number of rows
+			// inserted during setup. This ensures that all columns are modified
+			// and that no row is modified twice.
+			params[x-1] = n + 1
+			builder.WriteString(fmt.Sprintf("col%d = ?", x))
+			if x < columnCount-1 {
+				builder.WriteString(", ")
+			}
+		}
+		builder.WriteString(" WHERE col0 = ?")
+		params[len(params)-1] = 0
+		query = builder.String()
+	case OpDelete:
+		query = fmt.Sprintf("DELETE FROM %s WHERE col0 = ?", testTableName)
+		params = make([]any, 1)
+	}
+
+	return query, params
 }
 
 func generateRecords(t tOrB, db *sql.DB, n int, offset int) {
@@ -843,7 +716,7 @@ func testDB(t tOrB) *sql.DB {
 	t.Helper()
 	dir := t.TempDir()
 
-	db, err := sql.Open("sqlite", filepath.Join(dir, "test.sqlite")+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=synchronous(full)&_pragma=foreign_keys(on)")
+	db, err := sql.Open("sqlite", filepath.Join(dir, "test.sqlite")+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=synchronous(normal)&_pragma=foreign_keys(on)")
 	require.NoError(t, err)
 	return db
 }

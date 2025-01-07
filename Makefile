@@ -11,6 +11,9 @@ TOOLS_FILE = $(TOOLS_DIR)/tools.go
 DIST_DIR = $(PROJECT_PATH)/dist
 BIN_DIR = $(PROJECT_PATH)/.bin
 BENCH_DIR = $(BUILD_DIR)/.bench
+IMAGES_DIR = $(PROJECT_PATH)/images
+IMAGES_PLOTS = $(wildcard $(IMAGES_DIR)/*.plot)
+IMAGES_PLOTS_RENDERED = $(subst .plot,.svg,$(IMAGES_PLOTS))
 COVER_DIR = $(BUILD_DIR)/.coverage
 COVERAGE_UNIT = $(COVER_DIR)/unit.out
 COVERAGE_UNIT_INTERCHANGE = $(COVERAGE_UNIT:.out=.interchange)
@@ -57,43 +60,65 @@ test/unit: $(COVERAGE_UNIT) | $(BIN_DIR)
 test/coverage: $(COVER_DIR) $(COVERAGE_UNIT) $(COVERAGE_UNIT_INTERCHANGE) $(COVERATE_UNIT_HTML) $(COVERAGE_UNIT_XML) $(COVERAGE_COMBINED) $(COVERAGE_COMBINED_INTERCHANGE) $(COVERAGE_COMBINED_HTML) $(COVERAGE_COMBINED_XML) | $(BIN_DIR)
 	@ $(GOCMD) tool cover -func $(COVERAGE_COMBINED)
 
-BENCH_TRIGGER_SERIAL = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialChanges.txt
-BENCH_TRIGGER_SERIAL_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialChanges-cmp.csv
-BENCH_TRIGGER_CONCURRENT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableConcurrentChanges.txt
-BENCH_TRIGGER_CONCURRENT_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableConcurrentChanges-cmp.csv
-BENCH_TRIGGER_LARGE_SERIAL = $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableSerialChanges.txt
-BENCH_TRIGGER_LARGE_SERIAL_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableSerialChanges-cmp.csv
-BENCH_TRIGGER_LARGE_CONCURRENT = $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableConcurrentChanges.txt
-BENCH_TRIGGER_LARGE_CONCURRENT_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableConcurrentChanges-cmp.csv
+BENCH_TRIGGER_SERIAL_INSERT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialInserts.txt
+BENCH_TRIGGER_SERIAL_INSERT_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialInserts-cmp.csv
+BENCH_TRIGGER_SERIAL_UPDATE = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialUpdates.txt
+BENCH_TRIGGER_SERIAL_UPDATE_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialUpdates-cmp.csv
+BENCH_TRIGGER_SERIAL_DELETE = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialDeletes.txt
+BENCH_TRIGGER_SERIAL_DELETE_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialDeletes-cmp.csv
+BENCH_TRIGGER_SERIAL_WIDE_INSERT = $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialInserts.txt
+BENCH_TRIGGER_SERIAL_WIDE_INSERT_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialInserts-cmp.csv
+BENCH_TRIGGER_SERIAL_WIDE_UPDATE = $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialUpdates.txt
+BENCH_TRIGGER_SERIAL_WIDE_UPDATE_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialUpdates-cmp.csv
+BENCH_TRIGGER_SERIAL_WIDE_DELETE = $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialDeletes.txt
+BENCH_TRIGGER_SERIAL_WIDE_DELETE_REPORT = $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialDeletes-cmp.csv
 BENCH_BLOB = $(BENCH_DIR)/BenchmarkBlobEncoding.txt
 BENCH_BLOB_REPORT = $(BENCH_DIR)/BenchmarkBlobEncoding-cmp.csv
 
-benchmarks: $(BENCH_TRIGGER_SERIAL) $(BENCH_TRIGGER_CONCURRENT) $(BENCH_TRIGGER_LARGE_SERIAL) $(BENCH_TRIGGER_LARGE_CONCURRENT) $(BENCH_BLOB)
-benchmarks/reports: $(BENCH_TRIGGER_SERIAL_REPORT) $(BENCH_TRIGGER_CONCURRENT_REPORT) $(BENCH_TRIGGER_LARGE_SERIAL_REPORT) $(BENCH_TRIGGER_LARGE_CONCURRENT_REPORT) $(BENCH_BLOB_REPORT)
+benchmarks: benchmarks/simple benchmarks/wide benchmarks/blob
+benchmarks/simple: $(BENCH_TRIGGER_SERIAL_INSERT) $(BENCH_TRIGGER_SERIAL_UPDATE) $(BENCH_TRIGGER_SERIAL_DELETE)
+benchmarks/wide: $(BENCH_TRIGGER_SERIAL_WIDE_INSERT) $(BENCH_TRIGGER_SERIAL_WIDE_UPDATE) $(BENCH_TRIGGER_SERIAL_WIDE_DELETE)
+benchmarks/blob: $(BENCH_BLOB)
 
-$(BENCH_TRIGGER_SERIAL): | $(BIN_DIR) $(BENCH_DIR)
-	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencySimpleTableSerialChanges*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialChanges.txt
-$(BENCH_TRIGGER_CONCURRENT): | $(BIN_DIR) $(BENCH_DIR)
-	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencySimpleTableConcurrentChanges*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableConcurrentChanges.txt
-$(BENCH_TRIGGER_LARGE_SERIAL): | $(BIN_DIR) $(BENCH_DIR)
-	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencyLargeTableSerialChanges*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableSerialChanges.txt
-$(BENCH_TRIGGER_LARGE_CONCURRENT): | $(BIN_DIR) $(BENCH_DIR)
-	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencyLargeTableConcurrentChanges*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableConcurrentChanges.txt
+benchmark-reports: benchmark-reports/simple benchmark-reports/wide benchmark-reports/blob
+benchmark-reports/simple: $(BENCH_TRIGGER_SERIAL_INSERT_REPORT) $(BENCH_TRIGGER_SERIAL_UPDATE_REPORT) $(BENCH_TRIGGER_SERIAL_DELETE_REPORT)
+benchmark-reports/wide: $(BENCH_TRIGGER_SERIAL_WIDE_INSERT_REPORT) $(BENCH_TRIGGER_SERIAL_WIDE_UPDATE_REPORT) $(BENCH_TRIGGER_SERIAL_WIDE_DELETE_REPORT)
+benchmark-reports/blob: $(BENCH_BLOB_REPORT)
+
+$(BENCH_TRIGGER_SERIAL_INSERT): | $(BIN_DIR) $(BENCH_DIR)
+	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencySimpleTableSerialInserts*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialInserts.txt
+$(BENCH_TRIGGER_SERIAL_UPDATE): | $(BIN_DIR) $(BENCH_DIR)
+	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencySimpleTableSerialUpdates*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialUpdates.txt
+$(BENCH_TRIGGER_SERIAL_DELETE): | $(BIN_DIR) $(BENCH_DIR)
+	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencySimpleTableSerialDeletes*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialDeletes.txt
+$(BENCH_TRIGGER_SERIAL_WIDE_INSERT): | $(BIN_DIR) $(BENCH_DIR)
+	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencyWideTableSerialInserts*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialInserts.txt
+$(BENCH_TRIGGER_SERIAL_WIDE_UPDATE): | $(BIN_DIR) $(BENCH_DIR)
+	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencyWideTableSerialUpdates*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialUpdates.txt
+$(BENCH_TRIGGER_SERIAL_WIDE_DELETE): | $(BIN_DIR) $(BENCH_DIR)
+	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkTriggerLatencyWideTableSerialDeletes*' -count=20 > $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialDeletes.txt
 $(BENCH_BLOB): | $(BIN_DIR) $(BENCH_DIR)
 	@ $(GOCMD) test -timeout 0 -run='^$$' -bench='^BenchmarkBlobEncoding*' -count=20 > $(BENCH_DIR)/BenchmarkBlobEncoding.txt
 
-$(BENCH_JSON_REPORT): $(BENCH_JSON) | $(BIN_DIR)
-	@ $(BIN_DIR)/benchstat -format csv -col /columns $(BENCH_DIR)/BenchmarkJSONCalculation.txt > $(BENCH_DIR)/BenchmarkJSONCalculation-cmp.csv
-$(BENCH_TRIGGER_SERIAL_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
-	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialChanges.txt > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialChanges-cmp.csv
-$(BENCH_TRIGGER_CONCURRENT_REPORT): $(BENCH_TRIGGER_CONCURRENT) | $(BIN_DIR)
-	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableConcurrentChanges.txt > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableConcurrentChanges-cmp.csv
-$(BENCH_TRIGGER_LARGE_SERIAL_REPORT): $(BENCH_TRIGGER_LARGE_SERIAL) | $(BIN_DIR)
-	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableSerialChanges.txt > $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableSerialChanges-cmp.csv
-$(BENCH_TRIGGER_LARGE_CONCURRENT_REPORT): $(BENCH_TRIGGER_LARGE_CONCURRENT) | $(BIN_DIR)
-	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableConcurrentChanges.txt > $(BENCH_DIR)/BenchmarkTriggerLatencyLargeTableConcurrentChanges-cmp.csv
+$(BENCH_TRIGGER_SERIAL_INSERT_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
+	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialInserts.txt > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialInserts-cmp.csv
+$(BENCH_TRIGGER_SERIAL_UPDATE_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
+	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialUpdates.txt > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialUpdates-cmp.csv
+$(BENCH_TRIGGER_SERIAL_DELETE_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
+	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialDeletes.txt > $(BENCH_DIR)/BenchmarkTriggerLatencySimpleTableSerialDeletes-cmp.csv
+$(BENCH_TRIGGER_SERIAL_WIDE_INSERT_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
+	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialInserts.txt > $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialInserts-cmp.csv
+$(BENCH_TRIGGER_SERIAL_WIDE_UPDATE_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
+	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialUpdates.txt > $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialUpdates-cmp.csv
+$(BENCH_TRIGGER_SERIAL_WIDE_DELETE_REPORT): $(BENCH_TRIGGER_SERIAL) | $(BIN_DIR)
+	@ $(BIN_DIR)/benchstat -format csv -col /triggers -row /columns $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialDeletes.txt > $(BENCH_DIR)/BenchmarkTriggerLatencyWideTableSerialDeletes-cmp.csv
 $(BENCH_BLOB_REPORT): $(BENCH_BLOB) | $(BIN_DIR)
 	@ $(BIN_DIR)/benchstat -format csv -col /size $(BENCH_DIR)/BenchmarkBlobEncoding.txt > $(BENCH_DIR)/BenchmarkBlobEncoding-cmp.csv
+
+images: $(IMAGES_PLOTS_RENDERED)
+
+$(IMAGES_DIR)/%.svg: $(IMAGES_DIR)/%.plot
+	@ gnuplot $^ > $@
 
 tools: | $(BIN_DIR)
 	@ cd $(TOOLS_DIR) && GOBIN=$(BIN_DIR) $(GOCMD) install $(GOTOOLS)
