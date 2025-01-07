@@ -10,13 +10,15 @@ import (
 )
 
 type dbMeta struct {
-	Filename string
-	WAL      bool
-	Tables   map[string]tableMeta
+	Filename   string
+	WAL        bool
+	ExtraFiles []string
+	Tables     map[string]tableMeta
 }
 
 func newDBMeta(db *sql.DB) (*dbMeta, error) {
 	var filename string
+	var extraFiles []string
 	if err := db.QueryRow("SELECT file FROM pragma_database_list WHERE name='main'").Scan(&filename); err != nil {
 		return nil, fmt.Errorf("%w: failed to determine database filename", err)
 	}
@@ -26,6 +28,9 @@ func newDBMeta(db *sql.DB) (*dbMeta, error) {
 		return nil, fmt.Errorf("%w: failed to determine database journal mode", err)
 	}
 	wal := strings.ToLower(pragmaWAL) == "wal"
+	if wal {
+		extraFiles = append(extraFiles, filename+"-wal", filename+"-shm")
+	}
 
 	tables := make(map[string]tableMeta)
 	rows, err := db.Query("SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table'")
@@ -72,9 +77,10 @@ func newDBMeta(db *sql.DB) (*dbMeta, error) {
 	}
 
 	return &dbMeta{
-		Filename: filename,
-		WAL:      wal,
-		Tables:   tables,
+		Filename:   filename,
+		WAL:        wal,
+		Tables:     tables,
+		ExtraFiles: extraFiles,
 	}, nil
 }
 

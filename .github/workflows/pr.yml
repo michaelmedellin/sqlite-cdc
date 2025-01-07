@@ -1,0 +1,37 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Pull Request Checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - "**"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        cache-dependency-path: |
+             go.sum
+             internal/tools/go.sum
+    - uses: actions/cache@v4
+      id: tools
+      with:
+        path: |
+          .bin
+        key: ${{ runner.os }}-${{ hashFiles('internal/tools/go.sum') }}
+    - name: Tools
+      if: steps.tools.outputs.cache-hit != 'true'
+      run: make tools
+    - name: Lint
+      run: make test/lint
+    - name: Unit Test
+      run: make test/unit

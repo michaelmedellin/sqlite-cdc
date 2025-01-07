@@ -7,12 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
 
 const (
@@ -20,37 +17,58 @@ const (
 	defaultMaxBatchSize = 50
 )
 
-type Option func(*triggers) error
+type Option func(*TriggerEngine) error
 
+// WithLogTableName specifies the name of the log table. This defaults to
+// __cdc_log but may be customized if needed.
 func WithLogTableName(name string) Option {
-	return func(t *triggers) error {
+	return func(t *TriggerEngine) error {
 		t.logTableName = name
 		return nil
 	}
 }
 
+// WithMaxBatchSize specifies the maximum number of changes to process in a
+// single batch. This defaults to 50.
 func WithMaxBatchSize(size int) Option {
-	return func(t *triggers) error {
+	return func(t *TriggerEngine) error {
 		t.maxBatchSize = size
 		return nil
 	}
 }
 
+// WithoutSubsecondTime can disable the use of subsecond timestamps in the log
+// table. This is only needed for old versions of SQLite and should be avoided
+// otherwise.
 func WithoutSubsecondTime(v bool) Option {
-	return func(t *triggers) error {
+	return func(t *TriggerEngine) error {
 		t.subsec = !v
 		return nil
 	}
 }
 
+// WithBlobSupport can enable or disable the storage of BLOB columns in the log
+// table. This defaults to false because of the performance impacts of encoding
+// BLOB type data.
 func WithBlobSupport(v bool) Option {
-	return func(t *triggers) error {
+	return func(t *TriggerEngine) error {
 		t.blobs = v
 		return nil
 	}
 }
 
-// New returns a CDC implementation based on triggers.
+// WithSignal installs a custom awakening signal that triggers the inspection
+// of the log table when in CDC mode. The default signal is a combination of
+// a filesystem watcher that signals when the SQLite files have changed and a
+// 250ms timer used as a backstop for any missed filesystem events.
+func WithSignal(signal Signal) Option {
+	return func(t *TriggerEngine) error {
+		t.signal = signal
+		return nil
+	}
+}
+
+// NewTriggerEngine returns a CDC implementation based on table triggers.
 //
 // This implementation works with any SQLite driver and uses only SQL operations
 // to implement CDC. For each specified table to monitor, the implementation
@@ -60,27 +78,19 @@ func WithBlobSupport(v bool) Option {
 //
 // The before and after images are stored as JSON objects in the log table. The
 // JSON objects are generated from the column names and values in the table.
-// Currently, only non-BLOB data types are supported in the before and after
-// images. Any BLOB type column is left out of the image. Note that the
-// limitation is associated with BLOB type data and not specifically BLOB type
-// columns. You are recommended to use strict tables to avoid non-BLOB columns
-// from containing BLOB data.
-func New(db *sql.DB, handler ChangesHandler, tables []string, options ...Option) (CDC, error) {
+//
+// See the TriggerEngine documentation for more details.
+func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []string, options ...Option) (CDC, error) {
 	meta, err := newDBMeta(db)
 	if err != nil {
 		return nil, err
 	}
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to create fsnotify watcher", err)
-	}
-	result := &triggers{
+	result := &TriggerEngine{
 		db:           db,
 		meta:         meta,
 		handler:      handler,
 		tables:       tables,
 		fnOnce:       &sync.Once{},
-		watcher:      watcher,
 		closed:       make(chan any),
 		closeOnce:    &sync.Once{},
 		logTableName: defaultLogTableName,
@@ -93,16 +103,75 @@ func New(db *sql.DB, handler ChangesHandler, tables []string, options ...Option)
 			return nil, err
 		}
 	}
+
+	if result.signal == nil {
+		fsSignal, err := NewFSNotifySignal(db)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create filesystem wake signal: %w", err)
+		}
+		timeSignal, err := NewTimeSignal(250 * time.Millisecond)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create time wake signal: %w", err)
+		}
+		signal, err := NewMultiSignal(fsSignal, timeSignal)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create multi wake signal: %w", err)
+		}
+		result.signal = signal
+	}
+
 	return result, nil
 }
 
-type triggers struct {
+// TriggerEngine implements CDC using table triggers.
+//
+// This implementation targets a specified set of tables and captures changes by
+// using AFTER triggers to populate a change log table. The setup and teardown
+// methods manage both the triggers and the log table. Currently, all target
+// tables must be set up and torn down together and cannot be targeted
+// individually.
+//
+// The bootstrap mode is implemented by selecting batches of records from target
+// tables. These are passed through to the bound ChangesHandler as they are
+// selected. Each table bootstrap begins with the specified BOOTSTRAP operation
+// event. Because this implementation of CDC uses table triggers and a
+// persistent chang log table, a bootstrap is usually only needed once after
+// running setup. If your system encounters a critical fault and needs to
+// rebuild state from a bootstrap then you can safely run bootstrap again.
+// However, subsequent runs of bootstrap mode do not clear the change log table.
+//
+// The cdc mode is implemented by selecting batches of records from the change
+// log table. The order of the log selection matches the natural sort order of
+// the table which, itself, matches the order in which changes were made to the
+// data. The frequency with which cdc mode checks for changes is determined by
+// the bound Signal implementation. The default signal is a combination of a
+// filesystem watcher and a time based interval. The filesystem watcher detects
+// changes to the underlying SQLite files with the intent to handle changes as
+// quickly as possible once they are persisted. However, the filesystem watcher
+// is not infallible so a time based interval signal is included as a backstop.
+// Generally, you are recommended to have some form of time based interval
+// signal to augment any other signal choices.
+//
+// By default, all change log entries are recorded with a millisecond precision
+// timestamp. This precision is only available in SQLite 3.42.0 and later. If
+// any system accessing the SQLite database is older than 3.42.0 then you must
+// disable the subsecond timestamp with the WithoutSubsecondTime option.
+//
+// By default, support for BLOB data is disabled and BLOB type columns are not
+// included in change log records due to the performance impacts of encoding
+// BLOB type data. If you need to handle BLOB type data then you must enable
+// BLOB support with the WithBlobSupport option. Note, however, that this
+// implementations identification of BLOB data is based on the declared column
+// type and not the underlying data type. Any BLOB data in a non-BLOB column
+// will cause a fault in this implementation. You are strongly recommended to
+// use STRICT tables to avoid accidental BLOB data in a non-BLOB column.
+type TriggerEngine struct {
 	db           *sql.DB
 	meta         *dbMeta
 	handler      ChangesHandler
 	tables       []string
 	fnOnce       *sync.Once
-	watcher      *fsnotify.Watcher
+	signal       Signal
 	closed       chan any
 	closeOnce    *sync.Once
 	logTableName string
@@ -111,7 +180,7 @@ type triggers struct {
 	blobs        bool
 }
 
-func (c *triggers) CDC(ctx context.Context) error {
+func (c *TriggerEngine) CDC(ctx context.Context) error {
 	var err error
 	c.fnOnce.Do(func() {
 		err = c.cdc(ctx)
@@ -119,49 +188,37 @@ func (c *triggers) CDC(ctx context.Context) error {
 	return err
 }
 
-func (c *triggers) cdc(ctx context.Context) error {
-	if err := c.watcher.Add(filepath.Dir(c.meta.Filename)); err != nil {
-		return fmt.Errorf("%w: failed to add %q to fsnotify watcher", err, filepath.Dir(c.meta.Filename))
+func (c *TriggerEngine) cdc(ctx context.Context) error {
+	if err := c.signal.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start signal: %w", err)
 	}
-	watchTargets := make(map[string]bool)
-	watchTargets[c.meta.Filename] = true
-	if c.meta.WAL {
-		watchTargets[c.meta.Filename+"-wal"] = true
-		watchTargets[c.meta.Filename+"-shm"] = true
-	}
+
+	waker := c.signal.Waker()
 	for {
 		select {
 		case <-c.closed:
 			return nil
 		case <-ctx.Done():
 			return c.Close(ctx)
-		case event, ok := <-c.watcher.Events:
+		case event, ok := <-waker:
 			if !ok {
-				// The watcher was closed, most likely from an explicit call to
-				// CDC.Close.
 				return c.Close(ctx)
 			}
-			if event.Op == fsnotify.Chmod {
-				continue
+			if event.Err != nil {
+				_ = c.Close(ctx)
+				return fmt.Errorf("wake signal error: %w", event.Err)
 			}
-			if !watchTargets[event.Name] {
+			if !event.Wake {
 				continue
 			}
 			if err := c.drainChanges(ctx); err != nil {
 				return fmt.Errorf("%w: failed to process changes from the log", err)
 			}
-		case err, ok := <-c.watcher.Errors:
-			if !ok {
-				// The watcher was closed, most likely from an explicit call to
-				// CDC.Close.
-				return c.Close(ctx)
-			}
-			return fmt.Errorf("%w: fsnotify watcher error", err)
 		}
 	}
 }
 
-func (c *triggers) drainChanges(ctx context.Context) error {
+func (c *TriggerEngine) drainChanges(ctx context.Context) error {
 	changes := make(Changes, 0, c.maxBatchSize)
 	for {
 		rows, err := c.db.QueryContext(ctx, `SELECT id, timestamp, tablename, operation, before, after FROM `+c.logTableName+` ORDER BY id ASC LIMIT ?`, c.maxBatchSize) //nolint:gosec
@@ -222,7 +279,7 @@ func (c *triggers) drainChanges(ctx context.Context) error {
 	}
 }
 
-func (c *triggers) Bootstrap(ctx context.Context) error {
+func (c *TriggerEngine) Bootstrap(ctx context.Context) error {
 	var err error
 	c.fnOnce.Do(func() {
 		err = c.bootstrap(ctx)
@@ -230,7 +287,7 @@ func (c *triggers) Bootstrap(ctx context.Context) error {
 	return err
 }
 
-func (c *triggers) bootstrap(ctx context.Context) error {
+func (c *TriggerEngine) bootstrap(ctx context.Context) error {
 	for _, table := range c.tables {
 		if err := c.bootstrapTable(ctx, table); err != nil {
 			return fmt.Errorf("%w: failed to bootstrap table %s", err, table)
@@ -239,18 +296,23 @@ func (c *triggers) bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (c *triggers) bootstrapTable(ctx context.Context, table string) error {
+func (c *TriggerEngine) bootstrapTable(ctx context.Context, table string) error {
 	t, ok := c.meta.Tables[table]
 	if !ok {
 		return fmt.Errorf("table %q not found in database", table)
 	}
 	q := sqlSelectFirst(t, c.blobs)
-	rows, err := c.db.QueryContext(ctx, q, c.maxBatchSize)
+	rows, err := c.db.QueryContext(ctx, q, c.maxBatchSize-1)
 	if err != nil {
 		return fmt.Errorf("%w: failed to select first bootstrap rows for %s", err, table)
 	}
 	defer rows.Close()
 	chs := make(Changes, 0, c.maxBatchSize)
+	chs = append(chs, Change{
+		Table:     table,
+		Timestamp: time.Now(),
+		Operation: Bootstrap,
+	})
 	selections := append(sqlKeyValuesForTable(t), new(string))
 	for rows.Next() {
 		if err := rows.Scan(selections...); err != nil {
@@ -320,7 +382,7 @@ func (c *triggers) bootstrapTable(ctx context.Context, table string) error {
 	}
 }
 
-func (c *triggers) BootstrapAndCDC(ctx context.Context) error {
+func (c *TriggerEngine) BootstrapAndCDC(ctx context.Context) error {
 	var err error
 	c.fnOnce.Do(func() {
 		err = c.bootstrap(ctx)
@@ -331,7 +393,7 @@ func (c *triggers) BootstrapAndCDC(ctx context.Context) error {
 	})
 	return err
 }
-func (c *triggers) Setup(ctx context.Context) error {
+func (c *TriggerEngine) Setup(ctx context.Context) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%w: failed to create setup transaction", err)
@@ -362,7 +424,7 @@ func (c *triggers) Setup(ctx context.Context) error {
 	}
 	return nil
 }
-func (c *triggers) Teardown(ctx context.Context) error {
+func (c *TriggerEngine) Teardown(ctx context.Context) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("%w: failed to create teardown transaction", err)
@@ -393,17 +455,21 @@ func (c *triggers) Teardown(ctx context.Context) error {
 	}
 	return nil
 }
-func (c *triggers) Close(ctx context.Context) error {
+func (c *TriggerEngine) Close(ctx context.Context) error {
+	var err error
 	c.closeOnce.Do(func() {
 		close(c.closed)
+		if c.signal != nil {
+			if cerr := c.signal.Close(); cerr != nil {
+				err = fmt.Errorf("failed to close wake signal: %w", cerr)
+				return
+			}
+		}
 	})
-	if err := c.watcher.Close(); err != nil {
-		return fmt.Errorf("%w: failed to close fsnotify watcher", err)
-	}
-	return c.db.Close()
+	return err
 }
 
-func (c *triggers) handle(ctx context.Context, changes Changes) error {
+func (c *TriggerEngine) handle(ctx context.Context, changes Changes) error {
 	return c.handler.HandleChanges(ctx, changes)
 }
 

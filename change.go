@@ -20,9 +20,10 @@ type Change struct {
 type Operation string
 
 const (
-	Insert Operation = "INSERT"
-	Update Operation = "UPDATE"
-	Delete Operation = "DELETE"
+	Insert    Operation = "INSERT"
+	Update    Operation = "UPDATE"
+	Delete    Operation = "DELETE"
+	Bootstrap Operation = "BOOTSTRAP"
 )
 
 func (c Change) String() string {
