@@ -54,11 +54,12 @@ func (h *HTTPBasicPOST) HandleChanges(ctx context.Context, changes cdc.Changes) 
 		return fmt.Errorf("%w: failed to create POST request", err)
 	}
 	resp, err := h.Client.Do(req)
+	if resp != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		return fmt.Errorf("%w: failed to POST changes", err)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
