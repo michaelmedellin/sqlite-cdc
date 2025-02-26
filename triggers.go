@@ -81,16 +81,11 @@ func WithSignal(signal Signal) Option {
 // JSON objects are generated from the column names and values in the table.
 //
 // See the TriggerEngine documentation for more details.
-func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []*string, options ...Option) (CDC, error) {
-	log.Printf("DEBUG: Initializing new TriggerEngine with %d tables", len(tables))
-	
+func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []string, options ...Option) (CDC, error) {
 	meta, err := newDBMeta(db)
 	if err != nil {
-		log.Printf("ERROR: Failed to initialize database metadata: %v", err)
 		return nil, err
 	}
-	log.Printf("DEBUG: Database metadata initialized successfully")
-	
 	result := &TriggerEngine{
 		db:           db,
 		meta:         meta,
@@ -104,8 +99,6 @@ func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []*string, opti
 		subsec:       true,
 		blobs:        false,
 	}
-	log.Printf("DEBUG: TriggerEngine base configuration created")
-	
 	for i, opt := range options {
 		log.Printf("DEBUG: Applying option %d", i+1)
 		if err := opt(result); err != nil {
@@ -114,7 +107,7 @@ func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []*string, opti
 		}
 	}
 	log.Printf("DEBUG: Successfully applied %d custom options", len(options))
-	
+
 	if result.signal == nil {
 		log.Printf("DEBUG: No signal provided, creating default signals")
 		
