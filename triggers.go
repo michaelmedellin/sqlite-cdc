@@ -97,16 +97,6 @@ func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []*string, opti
     }
     fmt.Println("DEBUG: Database ping successful")
     
-    // Check if tables are provided
-    fmt.Printf("DEBUG: Monitoring %d tables\n", len(tables))
-    for i, table := range tables {
-        if table == nil {
-            fmt.Printf("DEBUG: Table at index %d is nil\n", i)
-        } else {
-            fmt.Printf("DEBUG: Table[%d]: %s\n", i, *table)
-        }
-    }
-    
     fmt.Println("DEBUG: Initializing database metadata...")
     meta, err := newDBMeta(db)
     if err != nil {
