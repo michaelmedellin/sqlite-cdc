@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 	"log"
 )
 
@@ -105,7 +104,7 @@ func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []string, optio
     }
     fmt.Printf("DEBUG: Database metadata initialized successfully: type=%T\n", meta)
     
-	
+
 	result := &TriggerEngine{
 		db:           db,
 		meta:         meta,
