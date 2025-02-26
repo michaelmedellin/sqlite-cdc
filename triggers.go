@@ -81,11 +81,16 @@ func WithSignal(signal Signal) Option {
 // JSON objects are generated from the column names and values in the table.
 //
 // See the TriggerEngine documentation for more details.
-func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []string, options ...Option) (CDC, error) {
+func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []*string, options ...Option) (CDC, error) {
+	log.Printf("DEBUG: Initializing new TriggerEngine with %d tables", len(tables))
+	
 	meta, err := newDBMeta(db)
 	if err != nil {
+		log.Printf("ERROR: Failed to initialize database metadata: %v", err)
 		return nil, err
 	}
+	log.Printf("DEBUG: Database metadata initialized successfully")
+	
 	result := &TriggerEngine{
 		db:           db,
 		meta:         meta,
@@ -99,28 +104,47 @@ func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []string, optio
 		subsec:       true,
 		blobs:        false,
 	}
-	for _, opt := range options {
+	log.Printf("DEBUG: TriggerEngine base configuration created")
+	
+	for i, opt := range options {
+		log.Printf("DEBUG: Applying option %d", i+1)
 		if err := opt(result); err != nil {
+			log.Printf("ERROR: Failed to apply option %d: %v", i+1, err)
 			return nil, err
 		}
 	}
-
+	log.Printf("DEBUG: Successfully applied %d custom options", len(options))
+	
 	if result.signal == nil {
+		log.Printf("DEBUG: No signal provided, creating default signals")
+		
 		fsSignal, err := NewFSNotifySignal(db)
 		if err != nil {
+			log.Printf("ERROR: Failed to create filesystem wake signal: %v", err)
 			return nil, fmt.Errorf("failed to create filesystem wake signal: %w", err)
 		}
+		log.Printf("DEBUG: Created filesystem notification signal")
+		
 		timeSignal, err := NewTimeSignal(250 * time.Millisecond)
 		if err != nil {
+			log.Printf("ERROR: Failed to create time wake signal: %v", err)
 			return nil, fmt.Errorf("failed to create time wake signal: %w", err)
 		}
+		log.Printf("DEBUG: Created time-based signal with 250ms interval")
+		
 		signal, err := NewMultiSignal(fsSignal, timeSignal)
 		if err != nil {
+			log.Printf("ERROR: Failed to create multi wake signal: %v", err)
 			return nil, fmt.Errorf("failed to create multi wake signal: %w", err)
 		}
+		log.Printf("DEBUG: Created combined multi-signal successfully")
+		
 		result.signal = signal
+	} else {
+		log.Printf("DEBUG: Using provided custom signal")
 	}
-
+	
+	log.Printf("DEBUG: TriggerEngine initialization complete")
 	return result, nil
 }
 
