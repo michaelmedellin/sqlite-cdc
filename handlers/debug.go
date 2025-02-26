@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 
-	cdc "github.com/kevinconway/sqlite-cdc"
+	cdc "github.com/michaelmedellin/sqlite-cdc"
 )
 
 type Debug struct {

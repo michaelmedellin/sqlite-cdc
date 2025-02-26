@@ -17,8 +17,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	cdc "github.com/kevinconway/sqlite-cdc"
-	"github.com/kevinconway/sqlite-cdc/handlers"
+	cdc "github.com/michaelmedellin/sqlite-cdc"
+	"github.com/michaelmedellin/sqlite-cdc/handlers"
 )
 
 type strList []string

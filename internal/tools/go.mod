@@ -1,4 +1,4 @@
-module github.com/kevinconway/sqlite-cdc/internal/tools
+module github.com/michaelmedellin/sqlite-cdc/internal/tools
 
 go 1.23.0
 

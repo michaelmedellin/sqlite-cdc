@@ -11,7 +11,7 @@ import (
 	"io"
 	"net/http"
 
-	cdc "github.com/kevinconway/sqlite-cdc"
+	cdc "github.com/michaelmedellin/sqlite-cdc"
 )
 
 // HTTPBasicPOST implements the cdc.ChangesHandler interface by making POST
