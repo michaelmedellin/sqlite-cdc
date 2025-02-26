@@ -189,94 +189,229 @@ func (c *TriggerEngine) CDC(ctx context.Context) error {
 }
 
 func (c *TriggerEngine) cdc(ctx context.Context) error {
-	if err := c.signal.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start signal: %w", err)
-	}
-
-	waker := c.signal.Waker()
-	for {
-		select {
-		case <-c.closed:
-			return nil
-		case <-ctx.Done():
-			return c.Close(ctx)
-		case event, ok := <-waker:
-			if !ok {
-				return c.Close(ctx)
-			}
-			if event.Err != nil {
-				_ = c.Close(ctx)
-				return fmt.Errorf("wake signal error: %w", event.Err)
-			}
-			if !event.Wake {
-				continue
-			}
-			if err := c.drainChanges(ctx); err != nil {
-				return fmt.Errorf("%w: failed to process changes from the log", err)
-			}
-		}
-	}
+    log.Printf("CDC: Starting signal monitoring")
+    if err := c.signal.Start(ctx); err != nil {
+        log.Printf("CDC: Failed to start signal: %v", err)
+        return fmt.Errorf("failed to start signal: %w", err)
+    }
+    
+    log.Printf("CDC: Signal started successfully, getting waker channel")
+    waker := c.signal.Waker()
+    log.Printf("CDC: Entering main event loop")
+    
+    // Add counter to track iterations
+    loopCount := 0
+    
+    for {
+        loopCount++
+        log.Printf("CDC: Loop iteration #%d, waiting for events", loopCount)
+        
+        select {
+        case <-c.closed:
+            log.Printf("CDC: Received closed signal, exiting cleanly")
+            return nil
+            
+        case <-ctx.Done():
+            log.Printf("CDC: Context canceled, calling Close")
+            return c.Close(ctx)
+            
+        case event, ok := <-waker:
+            if !ok {
+                log.Printf("CDC: Waker channel closed, calling Close")
+                return c.Close(ctx)
+            }
+            
+            log.Printf("CDC: Received wake event: error=%v, wake=%v", event.Err, event.Wake)
+            
+            if event.Err != nil {
+                log.Printf("CDC: Wake event has error, closing and returning error")
+                _ = c.Close(ctx)
+                return fmt.Errorf("wake signal error: %w", event.Err)
+            }
+            
+            if !event.Wake {
+                log.Printf("CDC: Wake event not requesting wake, continuing")
+                continue
+            }
+            
+            log.Printf("CDC: Calling drainChanges to process log entries")
+            startTime := time.Now()
+            
+            if err := c.drainChanges(ctx); err != nil {
+                log.Printf("CDC: drainChanges failed with error: %v", err)
+                return fmt.Errorf("%w: failed to process changes from the log", err)
+            }
+            
+            duration := time.Since(startTime)
+            log.Printf("CDC: drainChanges completed successfully in %v", duration)
+        }
+    }
 }
 
 func (c *TriggerEngine) drainChanges(ctx context.Context) error {
-	changes := make(Changes, 0, c.maxBatchSize)
-	for {
-		rows, err := c.db.QueryContext(ctx, `SELECT id, timestamp, tablename, operation, before, after FROM `+c.logTableName+` ORDER BY id ASC LIMIT ?`, c.maxBatchSize) //nolint:gosec
-		if err != nil {
-			return fmt.Errorf("%w: failed to select changes from the log", err)
-		}
-		defer rows.Close()
-		maxID := new(int64)
-		for rows.Next() {
-			timestamp := new(string)
-			table := new(string)
-			operation := new(string)
-			before := &sql.NullString{}
-			after := &sql.NullString{}
-			if err := rows.Scan(maxID, timestamp, table, operation, before, after); err != nil {
-				return fmt.Errorf("%w: failed to read change record from the log", err)
-			}
-			ts, err := time.Parse("2006-01-02 15:04:05.999999999", *timestamp)
-			if err != nil {
-				return fmt.Errorf("%w: failed to parse timestamp %s from the log", err, *timestamp)
-			}
-			ch := Change{
-				Timestamp: ts,
-				Table:     *table,
-				Operation: strToOperation(*operation),
-			}
-			if before.Valid {
-				ch.Before = []byte(before.String)
-			}
-			if after.Valid {
-				ch.After = []byte(after.String)
-			}
-			changes = append(changes, ch)
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("%w: failed to read changes from the log", err)
-		}
-		if len(changes) < 1 {
-			return nil
-		}
-		if err := c.handle(ctx, changes); err != nil {
-			return fmt.Errorf("%w: failed to handle changes", err)
-		}
-		changes = changes[:0]
-		tx, err := c.db.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("%w: failed to create transaction to delete logs", err)
-		}
-		defer tx.Rollback()
-
-		_, err = tx.ExecContext(ctx, `DELETE FROM `+c.logTableName+` WHERE id <= ?`, *maxID) //nolint:gosec
-		if err != nil {
-			return fmt.Errorf("%w: failed to delete handled logs", err)
-		}
-		if err = tx.Commit(); err != nil {
-			return fmt.Errorf("%w: failed to commit deletion of logs", err)
-		}
-	}
+    fmt.Printf("drainChanges: Starting with maxBatchSize=%d, log table=%s\n", c.maxBatchSize, c.logTableName)
+    changes := make(Changes, 0, c.maxBatchSize)
+    batchCounter := 0
+    
+    for {
+        batchCounter++
+        fmt.Printf("drainChanges: Starting batch #%d\n", batchCounter)
+        
+        // Construct the query string for clarity in logs
+        query := fmt.Sprintf("SELECT id, timestamp, tablename, operation, before, after FROM %s ORDER BY id ASC LIMIT %d", 
+                            c.logTableName, c.maxBatchSize)
+        fmt.Printf("drainChanges: Executing query: %s\n", query)
+        
+        // Execute the query
+        rows, err := c.db.QueryContext(ctx, query, c.maxBatchSize)
+        if err != nil {
+            fmt.Printf("drainChanges: ERROR querying log table: %v\n", err)
+            return fmt.Errorf("%w: failed to select changes from the log", err)
+        }
+        defer rows.Close()
+        
+        // Initialize variables for tracking
+        maxID := new(int64)
+        rowCounter := 0
+        fmt.Printf("drainChanges: Beginning to scan rows\n")
+        
+        // Process each row
+        for rows.Next() {
+            rowCounter++
+            
+            // Create variables to store column data
+            timestamp := new(string)
+            table := new(string)
+            operation := new(string)
+            before := &sql.NullString{}
+            after := &sql.NullString{}
+            
+            // Scan the current row
+            if err := rows.Scan(maxID, timestamp, table, operation, before, after); err != nil {
+                fmt.Printf("drainChanges: ERROR scanning row: %v\n", err)
+                return fmt.Errorf("%w: failed to read change record from the log", err)
+            }
+            
+            fmt.Printf("drainChanges: Row %d scanned successfully: id=%d, table=%s, op=%s, timestamp=%s\n", 
+                      rowCounter, *maxID, *table, *operation, *timestamp)
+            
+            // Parse timestamp
+            ts, err := time.Parse("2006-01-02 15:04:05.999999999", *timestamp)
+            if err != nil {
+                fmt.Printf("drainChanges: ERROR parsing timestamp '%s': %v\n", *timestamp, err)
+                return fmt.Errorf("%w: failed to parse timestamp %s from the log", err, *timestamp)
+            }
+            
+            // Create change object
+            ch := Change{
+                Timestamp: ts,
+                Table:     *table,
+                Operation: strToOperation(*operation),
+            }
+            
+            // Add before/after data if available
+            if before.Valid {
+                beforeLen := len(before.String)
+                if beforeLen > 50 {
+                    fmt.Printf("drainChanges: Adding 'before' data (%d bytes, starts with: %.50s...)\n", 
+                              beforeLen, before.String)
+                } else {
+                    fmt.Printf("drainChanges: Adding 'before' data (%d bytes): %s\n", 
+                              beforeLen, before.String)
+                }
+                ch.Before = []byte(before.String)
+            } else {
+                fmt.Printf("drainChanges: No 'before' data for this change\n")
+            }
+            
+            if after.Valid {
+                afterLen := len(after.String)
+                if afterLen > 50 {
+                    fmt.Printf("drainChanges: Adding 'after' data (%d bytes, starts with: %.50s...)\n", 
+                              afterLen, after.String)
+                } else {
+                    fmt.Printf("drainChanges: Adding 'after' data (%d bytes): %s\n", 
+                              afterLen, after.String)
+                }
+                ch.After = []byte(after.String)
+            } else {
+                fmt.Printf("drainChanges: No 'after' data for this change\n")
+            }
+            
+            // Add to changes collection
+            changes = append(changes, ch)
+            fmt.Printf("drainChanges: Added change to batch, now have %d changes\n", len(changes))
+        }
+        
+        // Check for errors during iteration
+        if err := rows.Err(); err != nil {
+            fmt.Printf("drainChanges: ERROR during row iteration: %v\n", err)
+            return fmt.Errorf("%w: failed to read changes from the log", err)
+        }
+        
+        fmt.Printf("drainChanges: Completed scanning %d rows\n", rowCounter)
+        
+        // If no changes were found, exit the function
+        if len(changes) < 1 {
+            fmt.Printf("drainChanges: No changes found in this batch, exiting function\n")
+            return nil
+        }
+        
+        // Handle the changes
+        fmt.Printf("drainChanges: About to handle %d changes with maxID=%d\n", len(changes), *maxID)
+        handlerStart := time.Now()
+        if err := c.handle(ctx, changes); err != nil {
+            fmt.Printf("drainChanges: ERROR in handler: %v\n", err)
+            return fmt.Errorf("%w: failed to handle changes", err)
+        }
+        handlerDuration := time.Since(handlerStart)
+        fmt.Printf("drainChanges: Successfully handled changes in %v\n", handlerDuration)
+        
+        // Clear the changes slice for reuse
+        changes = changes[:0]
+        fmt.Printf("drainChanges: Cleared changes slice for next batch\n")
+        
+        // Start transaction to delete processed records
+        fmt.Printf("drainChanges: Starting transaction to delete processed logs\n")
+        txStart := time.Now()
+        tx, err := c.db.BeginTx(ctx, nil)
+        if err != nil {
+            fmt.Printf("drainChanges: ERROR beginning transaction: %v\n", err)
+            return fmt.Errorf("%w: failed to create transaction to delete logs", err)
+        }
+        defer tx.Rollback()
+        
+        // Delete processed records
+        deleteQuery := fmt.Sprintf("DELETE FROM %s WHERE id <= %d", c.logTableName, *maxID)
+        fmt.Printf("drainChanges: Executing delete: %s\n", deleteQuery)
+        deleteStart := time.Now()
+        result, err := tx.ExecContext(ctx, deleteQuery, *maxID)
+        if err != nil {
+            fmt.Printf("drainChanges: ERROR deleting records: %v\n", err)
+            return fmt.Errorf("%w: failed to delete handled logs", err)
+        }
+        
+        // Get number of affected rows if possible
+        if rowsAffected, err := result.RowsAffected(); err == nil {
+            fmt.Printf("drainChanges: Deleted %d records\n", rowsAffected)
+        } else {
+            fmt.Printf("drainChanges: Deleted records, but couldn't get count: %v\n", err)
+        }
+        
+        // Commit the transaction
+        fmt.Printf("drainChanges: Committing transaction\n")
+        if err = tx.Commit(); err != nil {
+            fmt.Printf("drainChanges: ERROR committing transaction: %v\n", err)
+            return fmt.Errorf("%w: failed to commit deletion of logs", err)
+        }
+        
+        txDuration := time.Since(txStart)
+        deleteDuration := time.Since(deleteStart)
+        fmt.Printf("drainChanges: Successfully committed transaction in %v (delete operation: %v)\n", 
+                  txDuration, deleteDuration)
+        
+        fmt.Printf("drainChanges: Completed batch #%d, starting next iteration\n", batchCounter)
+    }
 }
 
 func (c *TriggerEngine) Bootstrap(ctx context.Context) error {
