@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	_ "modernc.org/sqlite"
 
