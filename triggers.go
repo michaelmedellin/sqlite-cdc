@@ -81,64 +81,101 @@ func WithSignal(signal Signal) Option {
 // JSON objects are generated from the column names and values in the table.
 //
 // See the TriggerEngine documentation for more details.
-func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []string, options ...Option) (CDC, error) {
-	meta, err := newDBMeta(db)
-	if err != nil {
-		return nil, err
-	}
-	result := &TriggerEngine{
-		db:           db,
-		meta:         meta,
-		handler:      handler,
-		tables:       tables,
-		fnOnce:       &sync.Once{},
-		closed:       make(chan any),
-		closeOnce:    &sync.Once{},
-		logTableName: defaultLogTableName,
-		maxBatchSize: defaultMaxBatchSize,
-		subsec:       true,
-		blobs:        false,
-	}
-	for i, opt := range options {
-		log.Printf("DEBUG: Applying option %d", i+1)
-		if err := opt(result); err != nil {
-			log.Printf("ERROR: Failed to apply option %d: %v", i+1, err)
-			return nil, err
-		}
-	}
-	log.Printf("DEBUG: Successfully applied %d custom options", len(options))
-
-	if result.signal == nil {
-		log.Printf("DEBUG: No signal provided, creating default signals")
-		
-		fsSignal, err := NewFSNotifySignal(db)
-		if err != nil {
-			log.Printf("ERROR: Failed to create filesystem wake signal: %v", err)
-			return nil, fmt.Errorf("failed to create filesystem wake signal: %w", err)
-		}
-		log.Printf("DEBUG: Created filesystem notification signal")
-		
-		timeSignal, err := NewTimeSignal(250 * time.Millisecond)
-		if err != nil {
-			log.Printf("ERROR: Failed to create time wake signal: %v", err)
-			return nil, fmt.Errorf("failed to create time wake signal: %w", err)
-		}
-		log.Printf("DEBUG: Created time-based signal with 250ms interval")
-		
-		signal, err := NewMultiSignal(fsSignal, timeSignal)
-		if err != nil {
-			log.Printf("ERROR: Failed to create multi wake signal: %v", err)
-			return nil, fmt.Errorf("failed to create multi wake signal: %w", err)
-		}
-		log.Printf("DEBUG: Created combined multi-signal successfully")
-		
-		result.signal = signal
-	} else {
-		log.Printf("DEBUG: Using provided custom signal")
-	}
-	
-	log.Printf("DEBUG: TriggerEngine initialization complete")
-	return result, nil
+func NewTriggerEngine(db *sql.DB, handler ChangesHandler, tables []*string, options ...Option) (CDC, error) {
+    // Debug the database connection
+    fmt.Println("DEBUG: Checking database connection...")
+    if db == nil {
+        fmt.Println("DEBUG: Database connection is nil!")
+        return nil, fmt.Errorf("database connection is nil")
+    }
+    
+    // Test the connection by pinging
+    fmt.Println("DEBUG: Attempting to ping database...")
+    if err := db.Ping(); err != nil {
+        fmt.Printf("DEBUG: Database ping failed: %v\n", err)
+        return nil, fmt.Errorf("database ping failed: %w", err)
+    }
+    fmt.Println("DEBUG: Database ping successful")
+    
+    // Check if tables are provided
+    fmt.Printf("DEBUG: Monitoring %d tables\n", len(tables))
+    for i, table := range tables {
+        if table == nil {
+            fmt.Printf("DEBUG: Table at index %d is nil\n", i)
+        } else {
+            fmt.Printf("DEBUG: Table[%d]: %s\n", i, *table)
+        }
+    }
+    
+    fmt.Println("DEBUG: Initializing database metadata...")
+    meta, err := newDBMeta(db)
+    if err != nil {
+        fmt.Printf("DEBUG: Failed to initialize database metadata: %v\n", err)
+        return nil, err
+    }
+    fmt.Printf("DEBUG: Database metadata initialized successfully: type=%T\n", meta)
+    
+    // Continue with initialization
+    fmt.Println("DEBUG: Creating TriggerEngine instance...")
+    result := &TriggerEngine{
+        db:           db,
+        meta:         meta,
+        handler:      handler,
+        tables:       tables,
+        fnOnce:       &sync.Once{},
+        closed:       make(chan any),
+        closeOnce:    &sync.Once{},
+        logTableName: defaultLogTableName,
+        maxBatchSize: defaultMaxBatchSize,
+        subsec:       true,
+        blobs:        false,
+    }
+    
+    // Apply options
+    fmt.Printf("DEBUG: Applying %d options...\n", len(options))
+    for i, opt := range options {
+        fmt.Printf("DEBUG: Applying option %d\n", i)
+        if err := opt(result); err != nil {
+            fmt.Printf("DEBUG: Option %d failed: %v\n", i, err)
+            return nil, err
+        }
+    }
+    
+    // Initialize signal if not provided
+    if result.signal == nil {
+        fmt.Println("DEBUG: No signal provided, creating default signals...")
+        
+        fmt.Println("DEBUG: Creating filesystem notification signal...")
+        fsSignal, err := NewFSNotifySignal(db)
+        if err != nil {
+            fmt.Printf("DEBUG: Failed to create filesystem wake signal: %v\n", err)
+            return nil, fmt.Errorf("failed to create filesystem wake signal: %w", err)
+        }
+        fmt.Println("DEBUG: Filesystem notification signal created successfully")
+        
+        fmt.Println("DEBUG: Creating time-based signal (250ms)...")
+        timeSignal, err := NewTimeSignal(250 * time.Millisecond)
+        if err != nil {
+            fmt.Printf("DEBUG: Failed to create time wake signal: %v\n", err)
+            return nil, fmt.Errorf("failed to create time wake signal: %w", err)
+        }
+        fmt.Println("DEBUG: Time-based signal created successfully")
+        
+        fmt.Println("DEBUG: Creating combined multi-signal...")
+        signal, err := NewMultiSignal(fsSignal, timeSignal)
+        if err != nil {
+            fmt.Printf("DEBUG: Failed to create multi wake signal: %v\n", err)
+            return nil, fmt.Errorf("failed to create multi wake signal: %w", err)
+        }
+        fmt.Println("DEBUG: Multi-signal created successfully")
+        
+        result.signal = signal
+    } else {
+        fmt.Println("DEBUG: Custom signal provided via options")
+    }
+    
+    fmt.Println("DEBUG: TriggerEngine initialized successfully")
+    return result, nil
 }
 
 // TriggerEngine implements CDC using table triggers.
